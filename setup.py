@@ -53,7 +53,19 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "sam3-pipeline=scripts.run_pipeline:main",
+            # Phase 4 CLI entry points (src/cli/ package)
+            "sam3-pipeline=src.cli.pipeline:main",
+            "sam3-preprocess=src.cli.preprocess:main",
+            "sam3-segment=src.cli.segment:main",
+            "sam3-postprocess=src.cli.postprocess:main",
+            "sam3-filter=src.cli.filter:main",
+            "sam3-annotate=src.cli.annotate:main",
+            "sam3-validate=src.cli.validate:main",
+            "sam3-upload=src.cli.upload:main",
+            "sam3-download=src.cli.download:main",
+            "sam3-progress=src.cli.progress:main",
+            # Legacy thin wrapper (kept for backward compatibility)
+            "sam3-pipeline-legacy=scripts.run_pipeline:main",
         ],
     },
     include_package_data=True,

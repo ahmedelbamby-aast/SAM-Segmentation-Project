@@ -1088,6 +1088,158 @@ sequenceDiagram
 
 ---
 
+### Phase 4 — CLI Entry Points & Config Slicing (Agent D)
+
+**Date:** 23-02-2026  
+**Author:** Agent D — UI/CLI  
+**Status:** Delivered ✅
+
+#### Summary
+
+Implemented all 10 `sam3-*` console-script entry points in `src/cli/`, registered them in `setup.py`,
+wrote 52 unit tests, and produced companion documentation for every file. Each entry point:
+
+- Calls `LoggingSystem.initialize()` FIRST, before any other operation
+- Loads only the config slice(s) its stage uses (ISP compliance)
+- Wires concrete classes with Protocol types — DIP compliance
+- Uses `ModuleProgressManager` for ephemeral Rich progress bars
+- Returns exit code `0` on success, `1` on error
+
+#### Architecture Diagram
+
+```mermaid
+graph TD
+    EP["Console Scripts\n(setup.py)"]
+    EP -->|"sam3-pipeline"| PL["src/cli/pipeline.py"]
+    EP -->|"sam3-preprocess"| PR["src/cli/preprocess.py"]
+    EP -->|"sam3-segment"| SG["src/cli/segment.py"]
+    EP -->|"sam3-postprocess"| PO["src/cli/postprocess.py"]
+    EP -->|"sam3-filter"| FI["src/cli/filter.py"]
+    EP -->|"sam3-annotate"| AN["src/cli/annotate.py"]
+    EP -->|"sam3-validate"| VA["src/cli/validate.py"]
+    EP -->|"sam3-upload"| UP["src/cli/upload.py"]
+    EP -->|"sam3-download"| DL["src/cli/download.py"]
+    EP -->|"sam3-progress"| PG["src/cli/progress.py"]
+
+    PL -->|"wires"| PIPE["SegmentationPipeline"]
+    SG -->|"wires"| PROC["create_processor()"]
+    ALL["All CLIs"] -->|"initialize"| LOG["LoggingSystem"]
+    ALL -->|"Rich bars"| MGR["ModuleProgressManager"]
+```
+
+#### Module Dependency Diagram
+
+```mermaid
+graph LR
+    CLI["src/cli/*.py"] -->|"DI: Protocols"| IFACE["src/interfaces.py"]
+    CLI -->|"config slice"| CFG["src/config_manager.py"]
+    CLI -->|"logging"| LOG["src/logging_system.py"]
+    CLI -->|"progress"| MGR["src/progress_display.py"]
+    CLI -->|"registry"| REG["src/class_registry.py"]
+    CLI -->|"concrete impl"| MODS["src/sam3_segmentor.py\nsrc/post_processor.py\nsrc/annotation_writer.py\nsrc/result_filter.py\nsrc/roboflow_uploader.py\nsrc/validator.py\nsrc/progress_tracker.py"]
+```
+
+#### Files Modified / Created
+
+| File | Action | Description |
+|------|--------|-------------|
+| `src/cli/__init__.py` | Created | CLI package init listing all 10 modules |
+| `src/cli/pipeline.py` | Created | `sam3-pipeline` — full DI-wired pipeline orchestration |
+| `src/cli/preprocess.py` | Created | `sam3-preprocess` — scan/validate images via `ImagePreprocessor` |
+| `src/cli/segment.py` | Created | `sam3-segment` — batch inference via `create_processor()` |
+| `src/cli/postprocess.py` | Created | `sam3-postprocess` — NMS config validation + strategy override |
+| `src/cli/filter.py` | Created | `sam3-filter` — audit label files, move no-detection images |
+| `src/cli/annotate.py` | Created | `sam3-annotate` — write `data.yaml` via `AnnotationWriter` |
+| `src/cli/validate.py` | Created | `sam3-validate` — compare datasets via `Validator.compare_datasets()` |
+| `src/cli/upload.py` | Created | `sam3-upload` — queue Roboflow batches via `DistributedUploader` |
+| `src/cli/download.py` | Created | `sam3-download` — download SAM3 weights from HuggingFace Hub |
+| `src/cli/progress.py` | Created | `sam3-progress` — display SQLite job progress |
+| `src/cli/pipeline.md` | Created | CLI pipeline documentation |
+| `src/cli/preprocess.md` | Created | CLI preprocess documentation |
+| `src/cli/segment.md` | Created | CLI segment documentation |
+| `src/cli/postprocess.md` | Created | CLI postprocess documentation |
+| `src/cli/filter.md` | Created | CLI filter documentation |
+| `src/cli/annotate.md` | Created | CLI annotate documentation |
+| `src/cli/validate.md` | Created | CLI validate documentation |
+| `src/cli/upload.md` | Created | CLI upload documentation |
+| `src/cli/download.md` | Created | CLI download documentation |
+| `src/cli/progress.md` | Created | CLI progress documentation |
+| `setup.py` | Modified | Replaced 1 legacy entry with 11 console_scripts |
+| `tests/test_cli.py` | Created | 52 unit tests — all passing |
+
+#### Console Scripts (setup.py)
+
+| Command | Module | Stage |
+|---------|--------|-------|
+| `sam3-pipeline` | `src.cli.pipeline:main` | Full end-to-end pipeline |
+| `sam3-preprocess` | `src.cli.preprocess:main` | Image scan + validation |
+| `sam3-segment` | `src.cli.segment:main` | SAM3 inference |
+| `sam3-postprocess` | `src.cli.postprocess:main` | NMS post-processing |
+| `sam3-filter` | `src.cli.filter:main` | Empty-detection filtering |
+| `sam3-annotate` | `src.cli.annotate:main` | YOLO annotation writing |
+| `sam3-validate` | `src.cli.validate:main` | Dataset completeness check |
+| `sam3-upload` | `src.cli.upload:main` | Roboflow batch upload |
+| `sam3-download` | `src.cli.download:main` | Model weight download |
+| `sam3-progress` | `src.cli.progress:main` | Job progress display |
+| `sam3-pipeline-legacy` | `scripts.run_pipeline:main` | Legacy wrapper (backward compat) |
+
+#### Key Design Decisions
+
+- **LoggingSystem FIRST:** Every `main()` calls `LoggingSystem.initialize()` before `load_config()` or any I/O. This ensures all exceptions during config load are captured with JSON context.
+- **Config slicing (ISP):** Each CLI passes only the relevant config sub-object to its module constructor (e.g., `MaskPostProcessor(post_processing_config)`, not `MaskPostProcessor(config)`).
+- **Concrete wiring in CLI only (DIP):** Concrete class instantiation — `SAM3Segmentor(...)`, `AnnotationWriter(...)`, etc. — occurs exclusively in `src/cli/` entry points. Core modules accept Protocols.
+- **API correctness:** Discovered and fixed three API mismatches during impl: `tracker.reset_processing_images()` (not `reset_stuck_images()`), `validator.compare_datasets()` (not `validate()`), `uploader.queue_batch()` (not `upload_batch()`).
+- **Windows MagicMock tests:** CLI tests for segment used `input_dir.rglob.return_value = []` on the MagicMock config rather than patching `Path.__truediv__` (read-only attribute on Windows).
+
+#### Protocol Compliance
+
+- `sam3-pipeline`: wires `SegmentationPipeline` with `Segmentor`, `PostProcessor`, `Writer`, `Filter`, `Tracker`, `Uploader`, `Processor` — all Protocol types
+- `sam3-segment`: calls `create_processor()` factory → returned `Processor` instance (ISP-compliant)
+- `sam3-validate`: consumes `Validator` via its public API (no internal attribute access)
+- `sam3-upload`: consumes `DistributedUploader` via its public API
+
+#### Test Results
+
+```
+pytest tests/test_cli.py -v
+========================= 52 passed in 0.75s =========================
+
+pytest tests/ tests/integration/ --tb=no -q
+361 passed, 3 failed (pre-existing val/valid bug), 15 warnings in 4.47s
+```
+
+#### Integration Points
+
+```mermaid
+sequenceDiagram
+    participant USER as User
+    participant CL as sam3-pipeline CLI
+    participant LOG as LoggingSystem
+    participant CFG as load_config()
+    participant REG as ClassRegistry
+    participant PIPE as SegmentationPipeline
+
+    USER->>CL: sam3-pipeline --job-name batch_001
+    CL->>LOG: initialize(level="INFO")
+    CL->>CFG: load_config("config/config.yaml")
+    CFG-->>CL: Config dataclass
+    CL->>REG: ClassRegistry.from_config(config)
+    REG-->>CL: registry instance
+    CL->>PIPE: SegmentationPipeline(segmentor, post_processor,\n writer, filter, tracker, uploader, processor)
+    PIPE-->>CL: pipeline instance
+    CL->>PIPE: pipeline.run(job_name, resume=False)
+    PIPE-->>CL: stats dict
+    CL->>USER: print summary + exit(0)
+```
+
+#### Known Limitations / TODOs
+
+- `pipeline.py` `run()` still ~200 lines — thin-orchestrator refactor deferred to Phase 5
+- `ResultFilter` and `AnnotationWriter` receive full `config` (not thin slices) — ISP cleanup in Phase 5
+- Pre-existing `val` vs `valid` test failures in `test_annotation_writer.py` — Phase 5
+
+---
+
 ## 📄 License
 
 MIT License
