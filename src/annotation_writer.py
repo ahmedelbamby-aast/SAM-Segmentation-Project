@@ -10,9 +10,10 @@ import numpy as np
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import yaml
-import logging
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem
+
+logger = LoggingSystem.get_logger(__name__)
 
 
 class AnnotationWriter:
@@ -24,15 +25,18 @@ class AnnotationWriter:
     - data.yaml for dataset configuration
     """
     
-    def __init__(self, config):
+    def __init__(self, pipeline_config, class_registry):
         """
         Initialize annotation writer.
-        
+
         Args:
-            config: Configuration object with pipeline and model settings
+            pipeline_config: :class:`~src.config_manager.PipelineConfig` slice
+                (ISP — only the pipeline config, not the full Config object).
+            class_registry: :class:`~src.class_registry.ClassRegistry` instance
+                used as the single source of truth for class names.
         """
-        self.output_dir = Path(config.pipeline.output_dir)
-        self.class_names = config.model.prompts  # ["teacher", "student"]
+        self.output_dir = Path(pipeline_config.output_dir)
+        self.class_names = class_registry.class_names
         self._setup_directories()
         
         logger.info(f"Annotation writer initialized, output: {self.output_dir}")

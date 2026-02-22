@@ -125,8 +125,8 @@ def _init_worker(
         "worker_id": worker_id,
         "device": device,
         "segmentor": SAM3Segmentor(config.model, config.pipeline),
-        "filter": ResultFilter(config),
-        "writer": AnnotationWriter(config),
+        "filter": ResultFilter(config.pipeline),
+        "writer": AnnotationWriter(config.pipeline, registry),
         "registry": registry,
     }
 
@@ -405,10 +405,17 @@ class ParallelProcessor:
         pp = getattr(cfg, "post_processing", None)
         if pp is not None:
             d["post_processing"] = {
-                "nms_strategy": getattr(pp, "nms_strategy", "confidence"),
+                "enabled": getattr(pp, "enabled", True),
                 "iou_threshold": getattr(pp, "iou_threshold", 0.5),
-                "score_threshold": getattr(pp, "score_threshold", 0.1),
-                "max_detections": getattr(pp, "max_detections", 500),
+                "strategy": getattr(pp, "strategy", "confidence"),
+                "class_priority": list(getattr(pp, "class_priority", []) or []),
+                "soft_nms_sigma": getattr(pp, "soft_nms_sigma", 0.5),
+                "min_confidence_after_decay": getattr(pp, "min_confidence_after_decay", 0.1),
+                "weighted_nms_sigma": getattr(pp, "weighted_nms_sigma", 0.5),
+                "adaptive_nms_density_factor": getattr(pp, "adaptive_nms_density_factor", 0.1),
+                "diou_nms_beta": getattr(pp, "diou_nms_beta", 1.0),
+                "mask_merge_threshold": getattr(pp, "mask_merge_threshold", 0.7),
+                "enable_class_specific": getattr(pp, "enable_class_specific", False),
             }
         return d
 
@@ -544,8 +551,8 @@ class SequentialProcessor:
         self._segmentor = SAM3Segmentor(
             cfg.model, cfg.pipeline  # type: ignore[attr-defined]
         )
-        self._filter = ResultFilter(cfg)  # type: ignore[attr-defined]
-        self._writer = AnnotationWriter(cfg)  # type: ignore[attr-defined]
+        self._filter = ResultFilter(cfg.pipeline)  # type: ignore[attr-defined]
+        self._writer = AnnotationWriter(cfg.pipeline, self._registry)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

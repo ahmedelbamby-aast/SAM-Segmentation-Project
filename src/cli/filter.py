@@ -84,7 +84,7 @@ def main(argv: List[str] = None) -> int:
         config.pipeline.neither_dir = Path(args.neither_dir)
 
     # 5. Wire concrete class (ISP: filter only needs pipeline config slice)
-    result_filter = ResultFilter(config)
+    result_filter = ResultFilter(config.pipeline)
     print(f"📁 Neither folder: {result_filter.neither_dir}")
 
     # 6. Collect annotation TXT files to audit for empty annotations

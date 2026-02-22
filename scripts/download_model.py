@@ -6,7 +6,6 @@ Author: Ahmed Hany ElBamby
 Date: 06-02-2026
 """
 import argparse
-import logging
 import sys
 import os
 from pathlib import Path
@@ -15,16 +14,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.logging_system import LoggingSystem
 from src.model_downloader import HFModelDownloader, download_sam3_model
 
-
-def setup_logging(level: str = "INFO"):
-    """Configure logging."""
-    logging.basicConfig(
-        level=getattr(logging, level.upper()),
-        format='%(asctime)s | %(levelname)-8s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+_logger = LoggingSystem.get_logger(__name__)
 
 
 def print_banner():
@@ -39,7 +32,6 @@ def print_banner():
 
 def cmd_download(args):
     """Download the model."""
-    logger = logging.getLogger(__name__)
     
     print_banner()
     
@@ -264,8 +256,8 @@ Examples:
     )
     
     args = parser.parse_args()
-    
-    setup_logging(args.log_level)
+
+    LoggingSystem.initialize(level=args.log_level)
     
     # Route to appropriate command
     if args.status:

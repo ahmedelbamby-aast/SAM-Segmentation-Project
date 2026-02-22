@@ -18,16 +18,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.annotation_writer import AnnotationWriter
 
 
-class MockConfig:
-    """Mock configuration for testing."""
-    class Pipeline:
-        output_dir = None  # Set in fixture
-    
-    class Model:
-        prompts = ["teacher", "student"]
-    
-    pipeline = Pipeline()
-    model = Model()
+class MockPipelineConfig:
+    """Mock pipeline configuration for testing."""
+    output_dir = None  # Set in fixture
+
+
+class MockClassRegistry:
+    """Minimal mock registry providing class_names."""
+    class_names = ["teacher", "student"]
 
 
 @pytest.fixture
@@ -40,9 +38,9 @@ def temp_output_dir():
 @pytest.fixture
 def writer(temp_output_dir):
     """Create annotation writer instance."""
-    config = MockConfig()
-    config.pipeline.output_dir = str(temp_output_dir)
-    return AnnotationWriter(config)
+    pipeline_cfg = MockPipelineConfig()
+    pipeline_cfg.output_dir = str(temp_output_dir)
+    return AnnotationWriter(pipeline_cfg, MockClassRegistry())
 
 
 @pytest.fixture
@@ -71,7 +69,7 @@ class TestAnnotationWriter:
     
     def test_setup_directories(self, writer, temp_output_dir):
         """Test directory structure is created."""
-        for split in ['train', 'val', 'test']:
+        for split in ['train', 'valid', 'test']:
             assert (temp_output_dir / split / 'images').exists()
             assert (temp_output_dir / split / 'labels').exists()
     
@@ -137,7 +135,7 @@ class TestAnnotationWriter:
             data = yaml.safe_load(f)
         
         assert data['nc'] == 2
-        assert data['names'] == ['teacher', 'student']
+        assert data['names'] == {0: 'teacher', 1: 'student'}
         assert 'train' in data
         assert 'val' in data
         assert 'test' in data
@@ -147,7 +145,7 @@ class TestAnnotationWriter:
         stats = writer.get_stats()
         
         assert 'train' in stats
-        assert 'val' in stats
+        assert 'valid' in stats
         assert 'test' in stats
         
         for split_stats in stats.values():

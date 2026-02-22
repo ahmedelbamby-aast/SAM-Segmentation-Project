@@ -5,12 +5,13 @@ Author: Ahmed Hany ElBamby
 Date: 06-02-2026
 """
 import shutil
-import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem
+
+logger = LoggingSystem.get_logger(__name__)
 
 
 @dataclass
@@ -35,16 +36,17 @@ class ResultFilter:
     Images with no teacher or student detections are moved to a 'Neither' folder.
     """
     
-    def __init__(self, config):
+    def __init__(self, pipeline_config):
         """
         Initialize result filter.
-        
+
         Args:
-            config: Configuration object with pipeline settings
+            pipeline_config: :class:`~src.config_manager.PipelineConfig` slice
+                (ISP — receives only the pipeline config it needs, not the full Config).
         """
-        self.output_dir = Path(config.pipeline.output_dir)
-        # Use configurable neither_dir from config
-        self.neither_dir = Path(config.pipeline.neither_dir)
+        self.output_dir = Path(pipeline_config.output_dir)
+        # Use configurable neither_dir from pipeline config
+        self.neither_dir = Path(pipeline_config.neither_dir)
         self._setup_directories()
         
         self.stats = FilterStats()

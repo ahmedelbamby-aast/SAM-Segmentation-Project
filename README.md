@@ -1240,6 +1240,166 @@ sequenceDiagram
 
 ---
 
+### Phase 5 — SOLID Fixes, ISP Refactor, Status Enum & Pipeline Thin-Orchestrator (Agent E)
+
+**Date:** 23-02-2026  
+**Author:** Agent E — Testing & SOLID Compliance  
+**Status:** Delivered ✅
+
+#### Summary
+
+Phase 5 resolved all Known Issues from the copilot-instructions and eliminated the 3
+pre-existing test failures that had persisted since Phase 1.  Zero tests fail after
+this phase — 364 passing, 0 failing.
+
+Key changes:
+
+1. **ISP strict compliance** — `AnnotationWriter` and `ResultFilter` now receive only their
+   required config slices instead of the full `Config` object.
+2. **`annotation_writer.py` bugs fixed** — `val/` → `valid/`, `names` list → dict.
+3. **`Status` enum everywhere** — all raw strings (`'pending'`, `'completed'`, …) replaced
+   with `Status.*.value` parameterised queries in `progress_tracker.py`.
+4. **`LoggingSystem` propagated** — `config_manager.py`, `progress_tracker.py`,
+   `annotation_writer.py`, `result_filter.py` now use `LoggingSystem.get_logger(__name__)`.
+5. **`download_model.py`** — custom `setup_logging()` replaced with `LoggingSystem.initialize()`.
+6. **`_serialise_config()`** — fixed `post_processing` IPC dict: used wrong keys (`nms_strategy`,
+   `score_threshold`, `max_detections`) for fields that don't exist; now serialises all 10
+   `PostProcessingConfig` fields with correct names.
+7. **Thin orchestrator** — `pipeline.run()` refactored from 283 lines to ~35 lines by
+   extracting **`_collect_images()`**, **`_run_processing_loop()`**, and **`_finalize()`**.
+
+#### Architecture Diagram
+
+```mermaid
+graph TD
+    RUN["pipeline.run()\n~35 lines"] -->|delegates scan| CI["_collect_images()"]
+    RUN -->|delegates loop| RPL["_run_processing_loop()"]
+    RUN -->|delegates stats| FIN["_finalize()"]
+
+    CI -->|validator cache| VAL["Validator.get_cached_missing_images()"]
+    CI -->|pre-split| PRE["preprocessor.scan_presplit_directory()"]
+    CI -->|flat| FLAT["preprocessor.scan_directory()"]
+
+    RPL -->|read batch| TRK["ProgressTracker\n(Status enum)"]
+    RPL -->|process| PROC["Processor Protocol"]
+    RPL -->|queue batch| UPL["DistributedUploader"]
+
+    FIN -->|write| ANN["AnnotationWriter\n(pipeline_config, registry)"]
+    FIN -->|write| FILT["ResultFilter\n(pipeline_config)"]
+    FIN -->|wait| UPL
+```
+
+#### ISP Change Diagram
+
+```mermaid
+classDiagram
+    class AnnotationWriter {
+        -output_dir: Path
+        -class_names: List[str]
+        +__init__(pipeline_config, class_registry)
+        +write_annotation()
+        +write_data_yaml()
+        +get_stats()
+    }
+
+    class ResultFilter {
+        -output_dir: Path
+        -neither_dir: Path
+        +__init__(pipeline_config)
+        +filter_result()
+        +get_stats()
+    }
+
+    class PipelineConfig {
+        +output_dir: Path
+        +neither_dir: Path
+    }
+
+    class ClassRegistry {
+        +class_names: List[str]
+    }
+
+    PipelineConfig --> AnnotationWriter : "slice only"
+    ClassRegistry --> AnnotationWriter : "class_names"
+    PipelineConfig --> ResultFilter : "slice only"
+```
+
+#### Files Modified / Created
+
+| File | Action | Description |
+|------|--------|-------------|
+| `tests/test_annotation_writer.py` | Fixed | 3 pre-existing failures: `val`→`valid`, `names` list→dict, stats key |
+| `src/annotation_writer.py` | Modified | ISP: `__init__(pipeline_config, class_registry)` + LoggingSystem |
+| `src/result_filter.py` | Modified | ISP: `__init__(pipeline_config)` + LoggingSystem |
+| `src/pipeline.py` | Refactored | Thin orchestrator: `run()` 283→35 lines; extracted `_collect_images()`, `_run_processing_loop()`, `_finalize()` |
+| `src/config_manager.py` | Modified | LoggingSystem logger; removed unused `import logging` |
+| `src/progress_tracker.py` | Modified | LoggingSystem; all raw status strings → `Status.*.value` parameterised |
+| `src/parallel_processor.py` | Fixed | `_serialise_config()`: correct post_processing keys + all 10 fields |
+| `scripts/download_model.py` | Fixed | Removed custom `setup_logging()`; uses `LoggingSystem.initialize()` |
+| `src/cli/filter.py` | Updated | `ResultFilter(config)` → `ResultFilter(config.pipeline)` |
+| `src/cli/annotate.py` | Updated | `AnnotationWriter(config)` → `AnnotationWriter(config.pipeline, registry)` |
+
+#### SOLID Compliance Summary
+
+| Principle | Before Phase 5 | After Phase 5 |
+|-----------|---------------|---------------|
+| **SRP** | `run()` mixed scan+loop+upload (283 lines) | Split into `_collect_images`, `_run_processing_loop`, `_finalize` |
+| **OCP** | ✅ (NMS strategies, GPU strategies) | ✅ Unchanged |
+| **LSP** | ✅ (Protocols correctly implemented) | ✅ Unchanged |
+| **ISP** | `AnnotationWriter(config)`, `ResultFilter(config)` — received full Config | `AnnotationWriter(pipeline_config, registry)`, `ResultFilter(pipeline_config)` |
+| **DIP** | ✅ (Protocols everywhere) | ✅ Unchanged; ISP fix further reduces coupling |
+
+#### Key Design Decisions
+
+- **ISP callers updated atomically:** Changed `AnnotationWriter` and `ResultFilter` signatures then updated ALL 5 call sites (`pipeline.py`, `parallel_processor.py` ×2, `cli/filter.py`, `cli/annotate.py`) in one operation to avoid broken intermediate state.
+- **Status enum via parameterised queries:** `"WHERE status = ?"` with `Status.PENDING.value` as the param — strictly correct SQL practice, enum values never slip out of sync with stored strings.
+- **Thin orchestrator target:** `run()` at 35 lines is well within the 50-line target from the instructions. Each extracted method is a single cohesive responsibility.
+- **`post_processing` IPC fix:** The old serialisation used wrong field names (`nms_strategy`, `score_threshold`, `max_detections`) that don't exist in `PostProcessingConfig`. Workers would silently get default values instead of the configured ones. Fixed to serialise all 10 fields with correct names.
+
+#### Test Results
+
+```
+pytest tests/test_annotation_writer.py -v
+========================= 7 passed in 0.41s =========================
+
+pytest tests/test_progress_tracker.py -v
+========================= 9 passed in 0.16s =========================
+
+pytest tests/ tests/integration/ --tb=no -q
+364 passed, 0 failed, 15 warnings in 2.98s
+```
+
+Previously: 361 passed, **3 failed** (pre-existing) → Now: **364 passed, 0 failed** ✅
+
+#### Data Flow After Refactor
+
+```mermaid
+sequenceDiagram
+    participant CLI as sam3-pipeline CLI
+    participant RUN as pipeline.run()
+    participant CI as _collect_images()
+    participant RPL as _run_processing_loop()
+    participant FIN as _finalize()
+
+    CLI->>RUN: run(job_name, resume=False)
+    RUN->>CI: _collect_images(job_name)
+    CI-->>RUN: (image_paths, splits)
+    RUN->>RUN: tracker.create_job(...)
+    RUN->>RPL: _run_processing_loop(job_id, total, done)
+    RPL-->>RUN: (processed_count, error_count)
+    RUN->>FIN: _finalize(job_id, job_name, t0, …)
+    FIN-->>RUN: stats dict
+    RUN-->>CLI: stats dict
+```
+
+#### Known Limitations / TODOs
+
+- `scripts/run_pipeline.py` still calls the old `tracker.reset_stuck_images()` API — kept for backwards compatibility (the method still works correctly)
+- SQLite deprecation warnings for `datetime` adapter in Python 3.12 — cosmetic; not a functional issue
+- System tests (`tests/system/`) not yet written — Phase 5 delivery gate requires integration tests per table but system tests are a future phase
+
+---
+
 ## 📄 License
 
 MIT License

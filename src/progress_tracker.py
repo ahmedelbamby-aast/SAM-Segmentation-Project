@@ -10,9 +10,10 @@ from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
 from enum import Enum
 import threading
-import logging
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem
+
+logger = LoggingSystem.get_logger(__name__)
 
 
 class Status(Enum):
@@ -228,9 +229,9 @@ class ProgressTracker:
         """
         cursor = self.conn.execute(
             """SELECT id, path, split FROM images 
-               WHERE job_id = ? AND status = 'pending' 
+               WHERE job_id = ? AND status = ? 
                LIMIT ?""",
-            (job_id, limit)
+            (job_id, Status.PENDING.value, limit)
         )
         return [(row['id'], Path(row['path']), row['split']) for row in cursor.fetchall()]
     
@@ -244,8 +245,8 @@ class ProgressTracker:
     def mark_processing(self, image_ids: List[int]):
         """Mark images as currently being processed."""
         self.conn.executemany(
-            "UPDATE images SET status = 'processing' WHERE id = ?",
-            [(i,) for i in image_ids]
+            "UPDATE images SET status = ? WHERE id = ?",
+            [(Status.PROCESSING.value, i) for i in image_ids]
         )
         self.conn.commit()
     
@@ -260,28 +261,28 @@ class ProgressTracker:
             Number of images reset
         """
         cursor = self.conn.execute(
-            "UPDATE images SET status = 'pending' WHERE job_id = ? AND status = 'processing'",
-            (job_id,)
+            "UPDATE images SET status = ? WHERE job_id = ? AND status = ?",
+            (Status.PENDING.value, job_id, Status.PROCESSING.value)
         )
         count = cursor.rowcount
         self.conn.commit()
         if count > 0:
             logger.info(f"Reset {count} stuck images to pending")
         return count
-    
+
     def reset_error_images(self, job_id: int) -> int:
         """
         Reset images with 'error' status back to 'pending' for retry.
-        
+
         Args:
             job_id: Job ID to reset
-            
+
         Returns:
             Number of images reset
         """
         cursor = self.conn.execute(
-            "UPDATE images SET status = 'pending' WHERE job_id = ? AND status = 'error'",
-            (job_id,)
+            "UPDATE images SET status = ? WHERE job_id = ? AND status = ?",
+            (Status.PENDING.value, job_id, Status.ERROR.value)
         )
         count = cursor.rowcount
         self.conn.commit()
@@ -292,26 +293,26 @@ class ProgressTracker:
     def mark_completed(self, image_id: int):
         """Mark image as successfully processed."""
         self.conn.execute(
-            "UPDATE images SET status = 'completed', processed_at = ? WHERE id = ?",
-            (datetime.now(), image_id)
+            "UPDATE images SET status = ?, processed_at = ? WHERE id = ?",
+            (Status.COMPLETED.value, datetime.now(), image_id)
         )
     
     def mark_error(self, image_id: int, error_msg: str):
         """Mark image as failed with error message."""
         self.conn.execute(
-            "UPDATE images SET status = 'error', error_message = ?, processed_at = ? WHERE id = ?",
-            (error_msg[:500], datetime.now(), image_id)  # Truncate long errors
+            "UPDATE images SET status = ?, error_message = ?, processed_at = ? WHERE id = ?",
+            (Status.ERROR.value, error_msg[:500], datetime.now(), image_id)  # Truncate long errors
         )
     
     def checkpoint(self, job_id: int):
         """Commit current progress and update job stats."""
         self.conn.execute("""
             UPDATE jobs SET 
-                processed_count = (SELECT COUNT(*) FROM images WHERE job_id = ? AND status = 'completed'),
-                error_count = (SELECT COUNT(*) FROM images WHERE job_id = ? AND status = 'error'),
+                processed_count = (SELECT COUNT(*) FROM images WHERE job_id = ? AND status = ?),
+                error_count = (SELECT COUNT(*) FROM images WHERE job_id = ? AND status = ?),
                 updated_at = ?
             WHERE id = ?
-        """, (job_id, job_id, datetime.now(), job_id))
+        """, (job_id, Status.COMPLETED.value, job_id, Status.ERROR.value, datetime.now(), job_id))
         self.conn.commit()
         logger.debug(f"Checkpoint saved for job {job_id}")
     
@@ -372,8 +373,8 @@ class ProgressTracker:
     def mark_batch_uploaded(self, batch_id: int):
         """Mark batch as successfully uploaded to Roboflow."""
         self.conn.execute(
-            "UPDATE batches SET status = 'uploaded', uploaded_at = ? WHERE id = ?",
-            (datetime.now(), batch_id)
+            "UPDATE batches SET status = ?, uploaded_at = ? WHERE id = ?",
+            (Status.UPLOADED.value, datetime.now(), batch_id)
         )
         self.conn.commit()
         logger.info(f"Batch {batch_id} marked as uploaded")
@@ -381,32 +382,32 @@ class ProgressTracker:
     def mark_batch_error(self, batch_id: int, error_msg: str):
         """Mark batch upload as failed."""
         self.conn.execute(
-            "UPDATE batches SET status = 'error', upload_error = ? WHERE id = ?",
-            (error_msg[:500], batch_id)
+            "UPDATE batches SET status = ?, upload_error = ? WHERE id = ?",
+            (Status.ERROR.value, error_msg[:500], batch_id)
         )
         self.conn.commit()
     
     def get_pending_batches(self, job_id: int) -> List[Dict[str, Any]]:
         """Get batches that haven't been uploaded yet."""
         cursor = self.conn.execute(
-            "SELECT * FROM batches WHERE job_id = ? AND status != 'uploaded'",
-            (job_id,)
+            "SELECT * FROM batches WHERE job_id = ? AND status != ?",
+            (job_id, Status.UPLOADED.value)
         )
         return [dict(row) for row in cursor.fetchall()]
     
     def get_uploaded_batches(self, job_id: int) -> List[Dict[str, Any]]:
         """Get successfully uploaded batches."""
         cursor = self.conn.execute(
-            "SELECT * FROM batches WHERE job_id = ? AND status = 'uploaded'",
-            (job_id,)
+            "SELECT * FROM batches WHERE job_id = ? AND status = ?",
+            (job_id, Status.UPLOADED.value)
         )
         return [dict(row) for row in cursor.fetchall()]
     
     def reset_processing_images(self, job_id: int):
         """Reset images stuck in 'processing' state back to 'pending'."""
         cursor = self.conn.execute(
-            "UPDATE images SET status = 'pending' WHERE job_id = ? AND status = 'processing'",
-            (job_id,)
+            "UPDATE images SET status = ? WHERE job_id = ? AND status = ?",
+            (Status.PENDING.value, job_id, Status.PROCESSING.value)
         )
         self.conn.commit()
         if cursor.rowcount > 0:

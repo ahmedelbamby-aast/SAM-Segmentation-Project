@@ -78,10 +78,10 @@ def main(argv: List[str] = None) -> int:
         config.pipeline.output_dir = Path(args.output_dir)
 
     # 5. Wire concrete class
-    #    ISP note: AnnotationWriter consumes config.pipeline + config.model slices.
+    #    ISP: AnnotationWriter receives pipeline_config slice + ClassRegistry.
     #    ClassRegistry is the canonical source for class names (not hardcoded strings).
     registry = ClassRegistry.from_config(config.model)
-    writer = AnnotationWriter(config)
+    writer = AnnotationWriter(config.pipeline, registry)
     print(f"📝 Output directory: {config.pipeline.output_dir}")
     print(f"   Classes:         {registry.class_names}")
 

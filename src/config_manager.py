@@ -4,14 +4,15 @@ Configuration management with validation and environment variable support.
 Author: Ahmed Hany ElBamby
 Date: 06-02-2026
 """
-import logging
 import os
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Any, Dict
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem
+
+logger = LoggingSystem.get_logger(__name__)
 
 
 @dataclass
