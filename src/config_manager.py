@@ -4,11 +4,14 @@ Configuration management with validation and environment variable support.
 Author: Ahmed Hany ElBamby
 Date: 06-02-2026
 """
+import logging
 import os
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Any, Dict
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,11 +53,14 @@ class ModelConfig:
     half_precision: bool
     device: str
     parallel_workers: int = 1  # Number of parallel inference processes
+    class_remapping: Optional[Dict[str, str]] = None  # name→name, many-to-one
 
     def __post_init__(self):
         self.path = Path(self.path)
         if self.parallel_workers < 1:
             self.parallel_workers = 1
+        if self.class_remapping is None:
+            self.class_remapping = {}
 
 
 @dataclass
@@ -148,14 +154,44 @@ class RoboflowConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """Logging configuration."""
+    level: str = "INFO"
+    log_file: str = "logs/pipeline.log"
+    json_output: bool = True
+    max_file_size_mb: int = 50
+    console_rich: bool = True
+
+
+@dataclass
+class GPUConfig:
+    """GPU strategy configuration."""
+    strategy: str = "auto"  # auto, single_gpu, multi_gpu_ddp, cpu
+    devices: List[str] = field(default_factory=list)  # e.g. ["0", "1"]
+    workers_per_gpu: int = 2
+    memory_threshold: float = 0.85
+
+
+@dataclass
 class PostProcessingConfig:
     """Post-processing configuration for handling overlapping annotations."""
     enabled: bool = True
     iou_threshold: float = 0.5  # IoU threshold for detecting overlaps
-    strategy: str = "confidence"  # confidence, area, class_priority, soft_nms
-    class_priority: List[str] = field(default_factory=lambda: ["teacher", "student"])
-    soft_nms_sigma: float = 0.5  # Sigma for Soft-NMS
+    # Strategy name — one of the 10 registered NMS strategy names
+    strategy: str = "confidence"
+    # class_priority populated at runtime from ClassRegistry.class_names (not hardcoded)
+    class_priority: Optional[List[str]] = None
+    soft_nms_sigma: float = 0.5  # Sigma for Soft-NMS / Gaussian-SoftNMS
     min_confidence_after_decay: float = 0.1
+    weighted_nms_sigma: float = 0.5  # Sigma for WeightedNMS merge
+    adaptive_nms_density_factor: float = 0.1  # AdaptiveNMS density scale
+    diou_nms_beta: float = 1.0  # DIoU penalty exponent
+    mask_merge_threshold: float = 0.7  # IoU threshold for MaskMergeNMS
+    enable_class_specific: bool = False  # Toggle class-specific NMS
+
+    def __post_init__(self):
+        if self.class_priority is None:
+            self.class_priority = []
 
 
 @dataclass
@@ -167,6 +203,8 @@ class Config:
     progress: ProgressConfig
     roboflow: RoboflowConfig
     post_processing: Optional[PostProcessingConfig] = None
+    logging: Optional[LoggingConfig] = None
+    gpu: Optional[GPUConfig] = None
 
 
 def _expand_env_vars(obj: Any) -> Any:
@@ -228,13 +266,23 @@ def load_config(config_path: str) -> Config:
         if 'post_processing' in raw:
             post_processing = _dict_to_dataclass(raw['post_processing'], PostProcessingConfig)
         
+        logging_cfg = None
+        if 'logging' in raw:
+            logging_cfg = _dict_to_dataclass(raw['logging'], LoggingConfig)
+
+        gpu_cfg = None
+        if 'gpu' in raw:
+            gpu_cfg = _dict_to_dataclass(raw['gpu'], GPUConfig)
+
         config = Config(
             pipeline=_dict_to_dataclass(raw['pipeline'], PipelineConfig),
             model=_dict_to_dataclass(raw['model'], ModelConfig),
             split=_dict_to_dataclass(raw['split'], SplitConfig),
             progress=_dict_to_dataclass(raw['progress'], ProgressConfig),
             roboflow=_dict_to_dataclass(raw['roboflow'], RoboflowConfig),
-            post_processing=post_processing
+            post_processing=post_processing,
+            logging=logging_cfg,
+            gpu=gpu_cfg,
         )
     except TypeError as e:
         raise ValueError(f"Invalid configuration: {e}")
@@ -288,14 +336,29 @@ def load_config_from_dict(raw: Dict[str, Any]) -> Config:
         Config object
     """
     try:
+        post_processing = None
+        if 'post_processing' in raw:
+            post_processing = _dict_to_dataclass(raw['post_processing'], PostProcessingConfig)
+
+        logging_cfg = None
+        if 'logging' in raw:
+            logging_cfg = _dict_to_dataclass(raw['logging'], LoggingConfig)
+
+        gpu_cfg = None
+        if 'gpu' in raw:
+            gpu_cfg = _dict_to_dataclass(raw['gpu'], GPUConfig)
+
         config = Config(
             pipeline=_dict_to_dataclass(raw['pipeline'], PipelineConfig),
             model=_dict_to_dataclass(raw['model'], ModelConfig),
             split=_dict_to_dataclass(raw['split'], SplitConfig),
             progress=_dict_to_dataclass(raw['progress'], ProgressConfig),
-            roboflow=_dict_to_dataclass(raw['roboflow'], RoboflowConfig)
+            roboflow=_dict_to_dataclass(raw['roboflow'], RoboflowConfig),
+            post_processing=post_processing,
+            logging=logging_cfg,
+            gpu=gpu_cfg,
         )
     except TypeError as e:
         raise ValueError(f"Invalid configuration: {e}")
-    
+
     return config

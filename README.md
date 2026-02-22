@@ -813,6 +813,152 @@ pytest tests/ -v
 pytest tests/ --cov=src --cov-report=html
 ```
 
+---
+
+## Development Reports
+
+### Phase 1 — Logging System & Interfaces (Agent A)
+
+**Date:** 22-02-2026  
+**Author:** Agent A — Infrastructure  
+**Status:** Delivered ✅
+
+#### Summary
+Created `src/logging_system.py` (singleton Rich + JSON logger, `@trace` decorator, correlation IDs) and `src/interfaces.py` (all Protocol definitions, `MaskData`, `SegmentationResult`, `ProcessingStats` data structures).  57 unit tests written and passing.
+
+---
+
+### Phase 2 — ClassRegistry + NMS Strategy Pattern + Config Updates (Agent B)
+
+**Date:** 22-02-2026  
+**Author:** Agent B — Core Pipeline  
+**Status:** Delivered ✅
+
+#### Summary
+
+Implemented the four Phase 2 modules per the delivery gate requirements:
+
+1. **`src/class_registry.py`** — Single source of truth for class names, IDs, and many-to-one prompt→output remapping.  Eliminates all hardcoded `["teacher", "student"]` lists.
+2. **`src/post_processor.py`** — Full OCP rewrite with 10 NMS strategies via `NMSStrategy` ABC + `NMSStrategyFactory` registry.  Decoupled from the segmentor.
+3. **`src/sam3_segmentor.py`** — Refactored to return `interfaces.SegmentationResult` with raw prompt indices (no NMS, no hardcoded class names).
+4. **`src/pipeline.py`** — Added DI constructor, explicit `_remap_result()` pipeline stage, and `ClassRegistry` integration.
+
+Config manager updated with `LoggingConfig`, `GPUConfig`, `class_remapping` field, and extended `PostProcessingConfig` (10 strategy config fields).
+
+#### Architecture Diagram
+
+```mermaid
+graph TD
+    YAML["config.yaml"]
+    REG["ClassRegistry\n(from_config)"]
+    SEG["SAM3Segmentor\n(raw prompt indices)"]
+    REMAP["_remap_result\n(pipeline stage)"]
+    NMS["MaskPostProcessor\n(10 strategies)"]
+    ANN["AnnotationWriter"]
+    DB["ProgressTracker\n(SQLite)"]
+
+    YAML --> REG
+    YAML --> SEG
+    SEG -->|"SegmentationResult\n(class_id = raw idx)"| REMAP
+    REG -->|"remap_prompt_index()"| REMAP
+    REMAP -->|"SegmentationResult\n(class_id = output ID)"| NMS
+    NMS --> ANN
+    NMS --> DB
+```
+
+#### Module Dependency Diagram
+
+```mermaid
+graph LR
+    CLI["src/cli/ entry points"] -->|"creates"| SEG["SAM3Segmentor"]
+    CLI -->|"creates"| NMS["MaskPostProcessor"]
+    CLI -->|"creates"| REG["ClassRegistry"]
+    CLI -->|"creates"| PIPE["SegmentationPipeline"]
+    SEG -->|"implements"| SP["Segmentor Protocol"]
+    NMS -->|"implements"| PP["PostProcessor Protocol"]
+    PIPE -->|"uses"| REG
+    PIPE -->|"_remap_result()"| REG
+    PIPE -->|"apply_nms()"| NMS
+```
+
+#### Files Modified / Created
+
+| File | Action | Description |
+|------|--------|-------------|
+| `src/class_registry.py` | Created | ClassRegistry — 290 lines, full many-to-one remap, IPC serialisation |
+| `src/post_processor.py` | Replaced | 355 lines — 10 NMS strategies via Strategy Pattern, OCP-compliant |
+| `src/sam3_segmentor.py` | Replaced | 389 lines — decoupled from NMS, returns `interfaces.SegmentationResult` |
+| `src/pipeline.py` | Modified | Added DI constructor, `_remap_result()` static method, ClassRegistry integration |
+| `src/config_manager.py` | Modified | Added `LoggingConfig`, `GPUConfig`, `class_remapping`, extended `PostProcessingConfig` |
+| `src/class_registry.md` | Created | Module documentation |
+| `src/post_processor.md` | Created | Module documentation |
+| `src/sam3_segmentor.md` | Created | Module documentation |
+| `src/pipeline.md` | Created | Module documentation |
+| `tests/test_class_registry.py` | Created | 51 unit tests — all passing |
+| `tests/test_post_processor.py` | Created | 52 unit tests — all passing |
+| `tests/integration/__init__.py` | Created | Integration tests package |
+| `tests/integration/test_segment_remap_nms.py` | Created | 9 integration tests — all passing |
+
+#### Key Design Decisions
+
+- **Remap before NMS (mandatory):** `_remap_result()` is a static pipeline method that wraps `ClassRegistry.remap_prompt_index()`.  It is called between the segment and NMS stages, never inside either.
+- **OCP for NMS strategies:** `@NMSStrategyFactory.register("name")` decorator self-registers strategies without modifying the factory.  New strategies require zero changes to existing code.
+- **ISP for config:** `SAM3Segmentor` receives `model_config` and `pipeline_config` slices, not the full `Config`.  `MaskPostProcessor` receives `PostProcessingConfig` only.
+- **IPC serialisation:** `ClassRegistry.to_dict()` / `from_dict()` enable safe transfer across `multiprocessing` process boundaries.
+
+#### Protocol Compliance
+
+- `SAM3Segmentor` implements `Segmentor` protocol
+- `MaskPostProcessor` implements `PostProcessor` protocol — verified by `isinstance(p, PostProcessor)` test
+- `SegmentationPipeline` constructor accepts `PostProcessor`, `Tracker`, `Uploader` abstract types
+
+#### Test Results
+
+```
+pytest tests/test_class_registry.py -v
+========================= 51 passed in 0.23s =========================
+
+pytest tests/test_post_processor.py -v
+========================= 52 passed in 0.41s =========================
+
+pytest tests/integration/test_segment_remap_nms.py -v
+========================= 9 passed in 0.31s =========================
+
+pytest tests/ tests/integration/ --tb=no -q
+3 failed (pre-existing), 206 passed, 15 warnings in 0.68s
+```
+
+The 3 failures are pre-existing `val`/`valid` dir bugs in `test_annotation_writer.py` — not introduced in Phase 2.
+
+#### Integration Points
+
+```mermaid
+sequenceDiagram
+    participant CLI as CLI / Pipeline
+    participant SEG as SAM3Segmentor
+    participant REG as ClassRegistry
+    participant NMS as MaskPostProcessor
+    participant ANN as AnnotationWriter
+
+    CLI->>SEG: process_image(path)
+    SEG-->>CLI: SegmentationResult (raw prompt idx)
+    CLI->>REG: remap_prompt_index(idx)
+    REG-->>CLI: output class ID
+    Note over CLI: _remap_result() applies remap to all masks
+    CLI->>NMS: apply_nms(remapped_result)
+    NMS-->>CLI: filtered SegmentationResult
+    CLI->>ANN: write_annotation(filtered_result)
+    ANN->>REG: get_yolo_names()
+```
+
+#### Known Limitations / TODOs
+
+- `DeviceManager` still lives in `sam3_segmentor.py` — migrates to `src/gpu_strategy.py` in Phase 3
+- `pipeline.py`'s `run()` remains 200+ lines — full thin-orchestrator refactor deferred to Phase 4 CLI work
+- Pre-existing test bugs in `test_annotation_writer.py` (`val` vs `valid`, `names` list vs dict) — fix in Phase 5
+
+---
+
 ## 📄 License
 
 MIT License

@@ -1,25 +1,55 @@
-"""
-Main pipeline orchestrator coordinating all components.
+"""Segmentation pipeline orchestrator.
+
+Thin orchestrator that sequences the pipeline stages:
+
+    scan → split-assign → segment (SAM3) → **remap** (ClassRegistry)
+    → NMS → filter → annotate → upload → validate
+
+Critical constraint — remap BEFORE NMS:
+    :meth:`_remap_result` is called immediately after ``SAM3Segmentor``
+    returns raw prompt indices, before NMS sees any class IDs.
+    See ``copilot-instructions.md`` § "Critical constraint — Remap before NMS".
+
+``SegmentationPipeline`` accepts **all** heavyweight dependencies via its
+constructor so callers (CLI entry points, tests) can inject mocks or
+alternative implementations that satisfy the Protocols in
+``src/interfaces.py``.
 
 Author: Ahmed Hany ElBamby
-Date: 06-02-2026
+Date: 22-02-2026
 """
+
+from __future__ import annotations
+
 import random
 import time
 import logging
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Dict, List, Optional, Any
+
 from tqdm import tqdm
 
 from .config_manager import Config, load_config
+from .interfaces import (
+    Segmentor,
+    PostProcessor,
+    Writer,
+    Filter,
+    Tracker,
+    Uploader,
+    SegmentationResult,
+)
+from .class_registry import ClassRegistry
 from .preprocessor import ImagePreprocessor
 from .progress_tracker import ProgressTracker
 from .roboflow_uploader import DistributedUploader
 from .dataset_cache import DatasetCache
 from .parallel_processor import create_processor
 from .utils import format_duration, estimate_eta
+from .logging_system import LoggingSystem, trace
 
-logger = logging.getLogger(__name__)
+_logger = LoggingSystem.get_logger(__name__)
+logger = _logger  # backward-compat alias for legacy code in this module
 
 
 class SegmentationPipeline:
@@ -35,39 +65,109 @@ class SegmentationPipeline:
     - Roboflow uploads
     """
     
-    def __init__(self, config: Config):
-        """
-        Initialize pipeline with configuration.
-        
+    def __init__(
+        self,
+        config: Config,
+        *,
+        registry: Optional[ClassRegistry] = None,
+        preprocessor: Optional[ImagePreprocessor] = None,
+        tracker: Optional[ProgressTracker] = None,
+        uploader: Optional[DistributedUploader] = None,
+        post_processor: Optional[PostProcessor] = None,
+    ) -> None:
+        """Initialise pipeline with configuration and optional injected deps.
+
+        All heavy dependencies are created from *config* by default.  Pass
+        explicit objects to override them (useful for testing or custom wiring).
+
         Args:
-            config: Configuration object
+            config: Full pipeline configuration.
+            registry: Optional pre-built :class:`~src.class_registry.ClassRegistry`.
+                      Created from *config* when not supplied.
+            preprocessor: Optional :class:`~src.preprocessor.ImagePreprocessor`.
+            tracker: Optional :class:`~src.progress_tracker.ProgressTracker`.
+            uploader: Optional :class:`~src.roboflow_uploader.DistributedUploader`.
+            post_processor: Optional :class:`~src.interfaces.PostProcessor`
+                            implementation used in the NMS stage.
         """
         self.config = config
-        
-        # Initialize components
-        logger.info("Initializing pipeline components...")
-        
-        self.preprocessor = ImagePreprocessor(config)
-        self.preprocessor.set_fast_scan(True)  # Skip cv2.imread during scan for speed
-        self.tracker = ProgressTracker(Path(config.progress.db_path))
-        self.uploader = DistributedUploader(config, self.tracker)
-        self.cache = DatasetCache()  # Cache for faster rescans
-        
-        # Create parallel or sequential processor based on config
-        num_workers = getattr(config.model, 'parallel_workers', 1)
+
+        # Build class registry (single source of truth for class names/IDs)
+        self.registry = registry or ClassRegistry.from_config(config.model)
+        _logger.info("ClassRegistry: %s", self.registry)
+
+        _logger.info("Initializing pipeline components…")
+
+        self.preprocessor = preprocessor or ImagePreprocessor(config)
+        self.preprocessor.set_fast_scan(True)
+        self.tracker = tracker or ProgressTracker(Path(config.progress.db_path))
+        self.uploader = uploader or DistributedUploader(config, self.tracker)
+        self.cache = DatasetCache()
+
+        num_workers = getattr(config.model, "parallel_workers", 1)
         self.processor = create_processor(config)
-        
-        # Keep writer and filter for final operations (data.yaml and manifest)
+
+        # NMS post-processor (injected or built from config)
+        if post_processor is not None:
+            self._post_processor: Optional[PostProcessor] = post_processor
+        elif config.post_processing and config.post_processing.enabled:
+            from .post_processor import create_post_processor
+            self._post_processor = create_post_processor(
+                config.post_processing, class_names=self.registry.class_names
+            )
+        else:
+            self._post_processor = None
+
         from .annotation_writer import AnnotationWriter
         from .result_filter import ResultFilter
         self.writer = AnnotationWriter(config)
         self.filter = ResultFilter(config)
-        
+
         self.batch_size = config.roboflow.batch_upload_size
         self.checkpoint_interval = config.progress.checkpoint_interval
-        
-        logger.info(f"Pipeline initialized (parallel_workers={num_workers})")
+
+        _logger.info("Pipeline initialized (parallel_workers=%d)", num_workers)
     
+    @staticmethod
+    def _remap_result(result: SegmentationResult, registry: ClassRegistry) -> SegmentationResult:
+        """**Remap stage** — convert raw SAM3 prompt indices → output class IDs.
+
+        This method MUST be called after ``SAM3Segmentor.process_image()`` and
+        BEFORE any NMS stage.  It updates each
+        :class:`~src.interfaces.MaskData`'s ``class_id`` in-place using
+        ``registry.remap_prompt_index()``.
+
+        Args:
+            result: Output of the segmentation stage (raw prompt indices).
+            registry: :class:`~src.class_registry.ClassRegistry` instance.
+
+        Returns:
+            Same :class:`~src.interfaces.SegmentationResult` with all
+            ``class_id`` values replaced by remapped output class IDs.
+        """
+        from dataclasses import replace as _replace
+        from .interfaces import MaskData
+
+        remapped_masks = [
+            MaskData(
+                mask=md.mask,
+                confidence=md.confidence,
+                class_id=registry.remap_prompt_index(md.class_id),
+                area=md.area,
+                bbox=md.bbox,
+                polygon=md.polygon,
+            )
+            for md in result.masks
+        ]
+        return SegmentationResult(
+            image_path=result.image_path,
+            masks=remapped_masks,
+            image_width=result.image_width,
+            image_height=result.image_height,
+            inference_time_ms=result.inference_time_ms,
+            device=result.device,
+        )
+
     def _assign_splits(self, image_paths: List[Path]) -> List[str]:
         """
         Assign train/val/test splits to images.
