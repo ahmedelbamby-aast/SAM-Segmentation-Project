@@ -1,0 +1,23 @@
+# Core dependencies
+ultralytics>=8.3.237
+roboflow>=1.1.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Image processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Configuration & utilities
+pyyaml>=6.0
+tqdm>=4.65.0
+
+# Model downloading
+huggingface_hub>=0.20.0
+
+# System monitoring (optional, for memory tracking)
+psutil>=5.9.0
+
+# Note: Also install Ultralytics CLIP fork:
+# pip install git+https://github.com/ultralytics/CLIP.git

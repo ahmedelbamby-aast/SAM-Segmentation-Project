@@ -1,0 +1,75 @@
+# =============================================================================
+# SAM 3 Segmentation Pipeline Configuration
+# =============================================================================
+
+pipeline:
+  input_dir: "/teamspace/studios/this_studio/dataset"      # Directory containing images to process
+  output_dir: "./output/dataset"           # Output directory for annotations
+  neither_dir: "./output/neither"          # Directory for images with no detections (optional, default: output_dir/neither)
+  input_mode: "pre-split"                  # "pre-split" (train/valid/test folders exist) or "flat" (random split)
+  train_percent: 0.5                       # % of train images (0=skip, 0.5=0.5%, 100=all)
+  valid_percent: 0.5                       # % of valid images (0=skip, 0.5=0.5%, 100=all)
+  test_percent: 0.5                        # % of test images (0=skip, 0.5=0.5%, 100=all)
+  resolution: 644                         # Target image size (1024 or 640)
+  supported_formats: [".jpg", ".jpeg", ".png", ".bmp", ".tiff"]
+  num_workers: 4                           # Parallel workers for image loading
+
+model:
+  path: "./models/sam3.pt"                 # Path to SAM 3 model weights
+  confidence: 0.25                         # Minimum confidence threshold
+  prompts: ["teacher", "student"]          # Text prompts for segmentation
+  half_precision: true                     # Use FP16 for GPU (auto-disabled on CPU)
+  device: "cpu"                           # auto, cpu, cuda, cuda:0, cuda:1, etc.
+  parallel_workers: 2                      # Number of parallel inference processes (1=sequential, 2+ for multi-process)
+
+split:
+  train: 0.70                              # Training set ratio (only used with input_mode: flat)
+  valid: 0.20                              # Validation set ratio
+  test: 0.10                               # Test set ratio
+  seed: 42                                 # Random seed for reproducible splits
+
+progress:
+  db_path: "./db/progress.db"              # SQLite database for progress tracking
+  checkpoint_interval: 100                 # Commit progress every N images
+  log_file: "./logs/pipeline.log"          # Log file path
+  log_level: "INFO"                        # DEBUG, INFO, WARNING, ERROR
+
+roboflow:
+  enabled: true                            # Enable/disable Roboflow uploads
+  batch_upload_size: 2000                  # Images per batch
+  upload_workers: 2                        # Parallel upload threads
+  retry_attempts: 3                        # Number of retry attempts
+  retry_delay: 5                           # Seconds between retries
+  upload_neither: false                    # Upload 'neither' folder (no detections) - default: false
+  
+  # Multi-workspace support - upload to multiple workspaces/projects
+  workspaces:
+    - workspace: "graduation-project-computer-vision-aastmt"
+      api_key: "BxHwjScTNYUMKbEEBR8Q"       # API key for this workspace
+      projects:
+        - project: "major-aast-dataset"
+          is_prediction: true              # true = needs approval, false = ground truth
+    
+    # Example: Add more workspaces with their own API keys
+    # - workspace: "backup-workspace"
+    #   api_key: "${BACKUP_ROBOFLOW_API_KEY}"
+    #   projects:
+    #     - project: "backup-dataset"
+    #       is_prediction: true
+  
+  # DEPRECATED: Legacy single workspace/project (still works for backward compatibility)
+  # api_key: "your-api-key"
+  # workspace: "your-workspace"
+  # project: "your-project"
+  # is_prediction: true
+
+
+# Post-processing for overlapping annotations
+post_processing:
+  enabled: true                            # Enable/disable post-processing NMS
+  iou_threshold: 0.5                       # IoU threshold for detecting overlaps (0.3-0.7 typical)
+  strategy: "confidence"                   # Strategy: confidence, area, class_priority, soft_nms
+  class_priority: ["teacher", "student"]   # Priority order (for class_priority strategy)
+  soft_nms_sigma: 0.5                      # Sigma for Soft-NMS Gaussian decay
+  min_confidence_after_decay: 0.1          # Min confidence after Soft-NMS decay
+
