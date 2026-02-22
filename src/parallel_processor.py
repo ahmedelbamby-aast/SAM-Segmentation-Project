@@ -1,24 +1,49 @@
-"""
-Multi-process parallel inference processor for SAM 3.
+"""Multi-process parallel inference processor for SAM 3 Segmentation Pipeline.
+
+Decoupled from ``SAM3Segmentor`` -- receives a :class:`~src.gpu_strategy.GPUStrategy`
+instance at construction and uses it to assign devices to worker processes.
+
+Pipeline stage run by this module:
+
+    For each image batch:
+      segment() -> raw prompt indices
+        remap() using ClassRegistry  (applied in worker, inside process boundary)
+        return SegmentationResult with remapped output class IDs
+
+Conforms to the :class:`~src.interfaces.Processor` Protocol.
 
 Author: Ahmed Hany ElBamby
-Date: 06-02-2026
+Date: 23-02-2026
 """
+
+from __future__ import annotations
+
 import multiprocessing as mp
-from multiprocessing import Pool, Queue
-from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any, Callable
 from dataclasses import dataclass
-import logging
-import time
-import queue
+from pathlib import Path
+from typing import Dict, Iterator, List, Optional
 
-logger = logging.getLogger(__name__)
+from .interfaces import ProgressCallback, SegmentationResult
+from .logging_system import LoggingSystem, trace
+
+_logger = LoggingSystem.get_logger(__name__)
 
 
-@dataclass  
+# ---------------------------------------------------------------------------
+# Dataclasses (used for IPC via pickling)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
 class ProcessingTask:
-    """A single image processing task."""
+    """A single-image processing task passed to a worker process.
+
+    Args:
+        image_id: Integer index for correlation with the result.
+        image_path: Absolute path of the image to process.
+        split: Dataset split name -- ``"train"``, ``"valid"``, or ``"test"``.
+    """
+
     image_id: int
     image_path: str
     split: str
@@ -26,313 +51,536 @@ class ProcessingTask:
 
 @dataclass
 class ProcessingResult:
-    """Result from processing an image."""
+    """Picklable result produced by a worker process.
+
+    Args:
+        image_id: Index matching the originating :class:`ProcessingTask`.
+        image_path: Absolute path of the processed image.
+        split: Dataset split name.
+        success: Whether processing completed without an exception.
+        has_detections: Whether the image yielded at least one detection.
+        error_message: Exception message if ``success`` is ``False``.
+        result_data: Reserved for future use.
+    """
+
     image_id: int
     image_path: str
     split: str
     success: bool
     has_detections: bool
     error_message: Optional[str] = None
-    result_data: Optional[Dict] = None  # Serializable result data
+    result_data: Optional[Dict] = None
 
 
-# Global variables for worker process (initialized once per worker)
-_worker_segmentor = None
-_worker_filter = None
-_worker_writer = None
-_worker_config = None
+# ---------------------------------------------------------------------------
+# Worker-process state  (module-level -- safe: each worker is a separate
+# process with its own memory space, not a thread)
+# ---------------------------------------------------------------------------
+
+_worker_state: Optional[Dict] = None
 
 
-def _init_worker(config_dict: Dict):
-    """Initialize worker process with its own SAM 3 model instance."""
-    global _worker_segmentor, _worker_filter, _worker_writer, _worker_config
-    
-    # Reconstruct config from dict
+def _init_worker(
+    config_dict: Dict,
+    registry_dict: Dict,
+    devices_list: List[str],
+    worker_counter: object,
+) -> None:
+    """Initialise a worker process with its own model copy.
+
+    Called once per worker by :class:`multiprocessing.Pool`.
+
+    Args:
+        config_dict: Serialised config dict.
+        registry_dict: Serialised :class:`~src.class_registry.ClassRegistry`.
+        devices_list: Ordered list of device strings.
+        worker_counter: Shared atomic counter for unique worker ID assignment.
+    """
+    global _worker_state  # noqa: PLW0603
+
+    with worker_counter.get_lock():  # type: ignore[union-attr]
+        worker_id = worker_counter.value  # type: ignore[union-attr]
+        worker_counter.value += 1  # type: ignore[union-attr]
+
+    device = devices_list[worker_id % len(devices_list)] if devices_list else "cpu"
+
     from .config_manager import load_config_from_dict
-    _worker_config = load_config_from_dict(config_dict)
-    
-    # Initialize components in worker process
+    from .class_registry import ClassRegistry
+
+    config = load_config_from_dict(config_dict)
+    config.model.device = device
+    registry = ClassRegistry.from_dict(registry_dict)
+
     from .sam3_segmentor import SAM3Segmentor
     from .result_filter import ResultFilter
     from .annotation_writer import AnnotationWriter
-    
-    logger.info(f"Initializing worker process {mp.current_process().name}")
-    
-    _worker_segmentor = SAM3Segmentor(_worker_config)
-    _worker_filter = ResultFilter(_worker_config)
-    _worker_writer = AnnotationWriter(_worker_config)
-    
-    logger.info(f"Worker {mp.current_process().name} ready")
+
+    import logging as _std_logging
+    _std_logging.getLogger(__name__).info(
+        "Worker %d initialised -- device=%s process=%s",
+        worker_id, device, mp.current_process().name,
+    )
+
+    _worker_state = {
+        "worker_id": worker_id,
+        "device": device,
+        "segmentor": SAM3Segmentor(config.model, config.pipeline),
+        "filter": ResultFilter(config),
+        "writer": AnnotationWriter(config),
+        "registry": registry,
+    }
 
 
-def _process_image_worker(task: Tuple[int, str, str]) -> Tuple[int, str, str, bool, bool, Optional[str]]:
-    """
-    Worker function to process a single image.
-    
+def _process_image_worker(task: ProcessingTask) -> ProcessingResult:
+    """Worker function -- processes one image and returns a picklable result.
+
+    Remap is applied inside :class:`~src.sam3_segmentor.SAM3Segmentor`
+    immediately after inference (per the remap-before-NMS contract).
+
     Args:
-        task: Tuple of (image_id, image_path, split)
-        
+        task: The image task to process.
+
     Returns:
-        Tuple of (image_id, image_path, split, success, has_detections, error_message)
+        :class:`ProcessingResult` with success/error information.
     """
-    global _worker_segmentor, _worker_filter, _worker_writer
-    
-    image_id, image_path_str, split = task
-    image_path = Path(image_path_str)  # Convert string to Path object
-    
+    global _worker_state  # noqa: PLW0603
+
+    if _worker_state is None:
+        return ProcessingResult(
+            task.image_id, task.image_path, task.split,
+            success=False, has_detections=False,
+            error_message="Worker not initialised",
+        )
+
+    image_path = Path(task.image_path)
+    segmentor = _worker_state["segmentor"]
+    result_filter = _worker_state["filter"]
+    writer = _worker_state["writer"]
+
     try:
-        # Process image with SAM 3
-        result = _worker_segmentor.process_image(image_path)
-        
-        # Filter: check if image has detections
-        has_detections = _worker_filter.filter_result(image_path, result)
-        
-        # Write annotation only if detections found
-        if has_detections and result and result.num_detections > 0:
-            _worker_writer.write_annotation(image_path, result, split)
-        
-        return (image_id, image_path_str, split, True, has_detections, None)
-        
-    except Exception as e:
-        logger.error(f"Error processing {image_path.name}: {e}")
-        return (image_id, image_path_str, split, False, False, str(e))
+        result: SegmentationResult = segmentor.process_image(image_path)
+        has_detections = result_filter.filter_result(image_path, result)
+        if has_detections:
+            writer.write_annotation(image_path, result, task.split)
+        return ProcessingResult(
+            task.image_id, task.image_path, task.split,
+            success=True, has_detections=has_detections,
+        )
+    except Exception as exc:  # noqa: BLE001
+        import logging as _std_logging
+        _std_logging.getLogger(__name__).error(
+            "Error processing %s: %s", image_path.name, exc
+        )
+        return ProcessingResult(
+            task.image_id, task.image_path, task.split,
+            success=False, has_detections=False,
+            error_message=str(exc),
+        )
+
+
+# ---------------------------------------------------------------------------
+# ParallelProcessor -- Processor Protocol implementation
+# ---------------------------------------------------------------------------
 
 
 class ParallelProcessor:
+    """Multi-process parallel SAM 3 inference processor.
+
+    Each worker process receives its own model copy and is assigned a device
+    by the injected :class:`~src.gpu_strategy.GPUStrategy`.
+
+    Implements the :class:`~src.interfaces.Processor` protocol.
+
+    Args:
+        config: Full :class:`~src.config_manager.Config` instance.
+        gpu_strategy: Device assignment strategy (injected at construction).
+        registry: :class:`~src.class_registry.ClassRegistry` -- serialised
+            for IPC and reconstructed in each worker.
+        num_workers: Override for worker count; defaults to
+            ``gpu_strategy.num_workers``.
     """
-    Multi-process parallel processor for SAM 3 inference.
-    
-    Uses a process pool to run inference on multiple images simultaneously.
-    Each worker process has its own copy of the SAM 3 model.
-    """
-    
-    def __init__(self, config, num_workers: int = 2):
-        """
-        Initialize parallel processor.
-        
-        Args:
-            config: Configuration object
-            num_workers: Number of parallel worker processes
-        """
-        self.config = config
-        self.num_workers = max(1, num_workers)
-        self.pool = None
-        self._config_dict = None
-        
-        logger.info(f"ParallelProcessor initialized with {self.num_workers} workers")
-    
-    def _get_config_dict(self) -> Dict:
-        """Convert config to serializable dict for worker processes."""
-        if self._config_dict is None:
-            self._config_dict = {
-                'pipeline': {
-                    'input_dir': str(self.config.pipeline.input_dir),
-                    'output_dir': str(self.config.pipeline.output_dir),
-                    'resolution': self.config.pipeline.resolution,
-                    'supported_formats': self.config.pipeline.supported_formats,
-                    'num_workers': self.config.pipeline.num_workers,
-                    'input_mode': self.config.pipeline.input_mode,
-                },
-                'model': {
-                    'path': str(self.config.model.path),
-                    'confidence': self.config.model.confidence,
-                    'prompts': self.config.model.prompts,
-                    'half_precision': self.config.model.half_precision,
-                    'device': self.config.model.device,
-                    'parallel_workers': 1,  # Workers don't spawn sub-workers
-                },
-                'split': {
-                    'train': self.config.split.train,
-                    'valid': self.config.split.valid,
-                    'test': self.config.split.test,
-                    'seed': self.config.split.seed,
-                },
-                'progress': {
-                    'db_path': str(self.config.progress.db_path),
-                    'checkpoint_interval': self.config.progress.checkpoint_interval,
-                    'log_file': str(self.config.progress.log_file),
-                    'log_level': self.config.progress.log_level,
-                },
-                'roboflow': {
-                    'enabled': self.config.roboflow.enabled,
-                    'api_key': self.config.roboflow.api_key,
-                    'workspace': self.config.roboflow.workspace,
-                    'project': self.config.roboflow.project,
-                    'batch_upload_size': self.config.roboflow.batch_upload_size,
-                    'upload_workers': self.config.roboflow.upload_workers,
-                    'retry_attempts': self.config.roboflow.retry_attempts,
-                    'retry_delay': self.config.roboflow.retry_delay,
-                }
-            }
-        return self._config_dict
-    
-    def start(self):
-        """Start the worker pool."""
-        if self.pool is not None:
-            return
-        
-        logger.info(f"Starting process pool with {self.num_workers} workers...")
-        
-        # Use spawn method for cleaner process isolation
-        ctx = mp.get_context('spawn')
-        
-        self.pool = ctx.Pool(
-            processes=self.num_workers,
-            initializer=_init_worker,
-            initargs=(self._get_config_dict(),)
+
+    def __init__(
+        self,
+        config: object,
+        gpu_strategy: object,
+        registry: object,
+        num_workers: Optional[int] = None,
+    ) -> None:
+        from .gpu_strategy import GPUStrategy
+        from .class_registry import ClassRegistry
+
+        if not isinstance(gpu_strategy, GPUStrategy):
+            raise TypeError(
+                f"gpu_strategy must be a GPUStrategy instance, got {type(gpu_strategy)}"
+            )
+        if not isinstance(registry, ClassRegistry):
+            raise TypeError(
+                f"registry must be a ClassRegistry instance, got {type(registry)}"
+            )
+
+        self._config = config
+        self._gpu_strategy: GPUStrategy = gpu_strategy
+        self._registry: ClassRegistry = registry
+        self._num_workers: int = max(1, num_workers or gpu_strategy.num_workers)
+        self._pool: Optional[mp.pool.Pool] = None  # type: ignore[name-defined]
+        self._config_dict: Optional[Dict] = None
+        self._registry_dict: Optional[Dict] = None
+
+        _logger.info(
+            "ParallelProcessor created -- strategy=%s, workers=%d",
+            gpu_strategy.backend, self._num_workers,
         )
-        
-        logger.info("Process pool started")
-    
+
+    # ------------------------------------------------------------------
+    # Processor Protocol
+    # ------------------------------------------------------------------
+
+    @trace
+    def start(self) -> None:
+        """Start the worker pool (idempotent)."""
+        if self._pool is not None:
+            return
+        self._gpu_strategy.initialize()
+
+        devices: List[str] = list(dict.fromkeys(
+            self._gpu_strategy.get_device_for_worker(i % self._gpu_strategy.num_workers)
+            for i in range(self._num_workers)
+        ))
+
+        ctx = mp.get_context("spawn")
+        worker_counter = ctx.Value("i", 0)
+
+        _logger.info(
+            "Starting pool -- %d workers, devices=%s",
+            self._num_workers, devices,
+        )
+        self._pool = ctx.Pool(
+            processes=self._num_workers,
+            initializer=_init_worker,
+            initargs=(
+                self._get_config_dict(),
+                self._get_registry_dict(),
+                devices,
+                worker_counter,
+            ),
+        )
+        _logger.info("Process pool started")
+
+    @trace
     def process_batch(
-        self, 
-        tasks: List[Tuple[int, str, str]]
-    ) -> List[Tuple[int, str, str, bool, bool, Optional[str]]]:
-        """
-        Process a batch of images in parallel.
-        
+        self,
+        image_paths: List[Path],
+        *,
+        callback: Optional[ProgressCallback] = None,
+    ) -> Iterator[SegmentationResult]:
+        """Process images in parallel, yielding results as they arrive.
+
+        Conforms to the :class:`~src.interfaces.Processor` protocol.
+
         Args:
-            tasks: List of (image_id, image_path, split) tuples
-            
-        Returns:
-            List of (image_id, image_path, split, success, has_detections, error) results
+            image_paths: Absolute image paths.
+            callback: Optional progress observer.
+
+        Yields:
+            :class:`~src.interfaces.SegmentationResult` for each successful image.
         """
-        if self.pool is None:
+        if self._pool is None:
             self.start()
-        
-        # Process all tasks in parallel
-        results = self.pool.map(_process_image_worker, tasks)
-        
-        return results
-    
-    def process_batch_async(
-        self, 
-        tasks: List[Tuple[int, str, str]],
-        callback: Optional[Callable] = None
-    ):
-        """
-        Process a batch of images asynchronously.
-        
+
+        tasks = [
+            ProcessingTask(i, str(p), self._resolve_split(p))
+            for i, p in enumerate(image_paths)
+        ]
+
+        if callback is not None:
+            for t in tasks:
+                callback.on_item_start(Path(t.image_path).stem)
+
+        for proc_result in self._pool.imap_unordered(  # type: ignore[union-attr]
+            _process_image_worker, tasks
+        ):
+            item_id = Path(proc_result.image_path).stem
+            if proc_result.success:
+                if callback is not None:
+                    callback.on_item_complete(item_id)
+                yield self._build_segmentation_result(proc_result)
+            else:
+                err = RuntimeError(proc_result.error_message or "Unknown error")
+                if callback is not None:
+                    callback.on_item_error(item_id, err)
+
+    @trace
+    def shutdown(self, wait: bool = True) -> None:
+        """Shut down the worker pool and release GPU resources.
+
         Args:
-            tasks: List of (image_id, image_path, split) tuples
-            callback: Optional callback for each completed result
-            
-        Returns:
-            AsyncResult object
+            wait: If ``True``, wait for all workers before returning.
         """
-        if self.pool is None:
-            self.start()
-        
-        return self.pool.map_async(_process_image_worker, tasks, callback=callback)
-    
-    def shutdown(self):
-        """Shutdown the worker pool."""
-        if self.pool is not None:
-            logger.info("Shutting down process pool...")
-            self.pool.close()
-            self.pool.join()
-            self.pool = None
-            logger.info("Process pool shutdown complete")
-    
-    def __enter__(self):
+        if self._pool is not None:
+            _logger.info("Shutting down process pool (wait=%s)...", wait)
+            if wait:
+                self._pool.close()
+                self._pool.join()
+            else:
+                self._pool.terminate()
+            self._pool = None
+        self._gpu_strategy.cleanup()
+        _logger.info("ParallelProcessor shutdown complete")
+
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "ParallelProcessor":
         self.start()
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.shutdown()
-        return False
+
+    def __exit__(self, *_: object) -> None:
+        self.shutdown(wait=True)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_config_dict(self) -> Dict:
+        if self._config_dict is None:
+            self._config_dict = self._serialise_config()
+        return self._config_dict
+
+    def _get_registry_dict(self) -> Dict:
+        if self._registry_dict is None:
+            self._registry_dict = self._registry.to_dict()
+        return self._registry_dict
+
+    def _serialise_config(self) -> Dict:
+        cfg = self._config
+        p = cfg.pipeline  # type: ignore[attr-defined]
+        m = cfg.model   # type: ignore[attr-defined]
+        s = cfg.split   # type: ignore[attr-defined]
+        pr = cfg.progress  # type: ignore[attr-defined]
+        rf = cfg.roboflow  # type: ignore[attr-defined]
+
+        d: Dict = {
+            "pipeline": {
+                "input_dir": str(p.input_dir),
+                "output_dir": str(p.output_dir),
+                "resolution": p.resolution,
+                "supported_formats": list(p.supported_formats),
+                "num_workers": 1,
+                "input_mode": p.input_mode,
+            },
+            "model": {
+                "path": str(m.path),
+                "confidence": m.confidence,
+                "prompts": list(m.prompts),
+                "half_precision": m.half_precision,
+                "device": m.device,
+                "parallel_workers": 1,
+                "class_remapping": getattr(m, "class_remapping", None) or {},
+            },
+            "split": {
+                "train": s.train,
+                "valid": s.valid,
+                "test": s.test,
+                "seed": s.seed,
+            },
+            "progress": {
+                "db_path": str(pr.db_path),
+                "checkpoint_interval": pr.checkpoint_interval,
+                "log_file": str(pr.log_file),
+                "log_level": pr.log_level,
+            },
+            "roboflow": {
+                "enabled": rf.enabled,
+                "api_key": rf.api_key,
+                "workspace": rf.workspace,
+                "project": rf.project,
+                "batch_upload_size": rf.batch_upload_size,
+                "upload_workers": rf.upload_workers,
+                "retry_attempts": rf.retry_attempts,
+                "retry_delay": rf.retry_delay,
+            },
+        }
+        pp = getattr(cfg, "post_processing", None)
+        if pp is not None:
+            d["post_processing"] = {
+                "nms_strategy": getattr(pp, "nms_strategy", "confidence"),
+                "iou_threshold": getattr(pp, "iou_threshold", 0.5),
+                "score_threshold": getattr(pp, "score_threshold", 0.1),
+                "max_detections": getattr(pp, "max_detections", 500),
+            }
+        return d
+
+    @staticmethod
+    def _resolve_split(path: Path) -> str:
+        """Infer the split name from the image path parents."""
+        for part in reversed(path.parts):
+            if part in ("train", "valid", "test"):
+                return part
+        return "train"
+
+    @staticmethod
+    def _build_segmentation_result(proc: ProcessingResult) -> SegmentationResult:
+        """Build a minimal SegmentationResult from a ProcessingResult."""
+        return SegmentationResult(
+            image_path=Path(proc.image_path),
+            masks=[],
+            image_width=0,
+            image_height=0,
+            inference_time_ms=0.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# SequentialProcessor -- single-process fallback
+# ---------------------------------------------------------------------------
 
 
 class SequentialProcessor:
+    """Single-process SAM 3 processor (fallback / testing / CPU-only mode).
+
+    Provides the same API as :class:`ParallelProcessor` for transparent
+    substitution.
+
+    Args:
+        config: Full :class:`~src.config_manager.Config` instance.
+        registry: :class:`~src.class_registry.ClassRegistry` instance.
     """
-    Sequential processor for SAM 3 inference (fallback/single-worker mode).
-    
-    Provides the same interface as ParallelProcessor for consistency.
-    """
-    
-    def __init__(self, config):
-        """Initialize with config."""
-        self.config = config
-        self.segmentor = None
-        self.filter = None
-        self.writer = None
-        
-        logger.info("SequentialProcessor initialized (single-process mode)")
-    
-    def _ensure_loaded(self):
-        """Lazy load components."""
-        if self.segmentor is None:
-            from .sam3_segmentor import SAM3Segmentor
-            from .result_filter import ResultFilter
-            from .annotation_writer import AnnotationWriter
-            
-            self.segmentor = SAM3Segmentor(self.config)
-            self.filter = ResultFilter(self.config)
-            self.writer = AnnotationWriter(self.config)
-    
-    def start(self):
-        """Start (lazy load components)."""
+
+    def __init__(self, config: object, registry: object) -> None:
+        self._config = config
+        self._registry = registry
+        self._segmentor: Optional[object] = None
+        self._filter: Optional[object] = None
+        self._writer: Optional[object] = None
+        _logger.info("SequentialProcessor created")
+
+    # ------------------------------------------------------------------
+    # Processor Protocol
+    # ------------------------------------------------------------------
+
+    @trace
+    def start(self) -> None:
+        """Lazily load all pipeline components."""
         self._ensure_loaded()
-    
+
+    @trace
     def process_batch(
-        self, 
-        tasks: List[Tuple[int, str, str]]
-    ) -> List[Tuple[int, str, str, bool, bool, Optional[str]]]:
-        """Process tasks sequentially."""
+        self,
+        image_paths: List[Path],
+        *,
+        callback: Optional[ProgressCallback] = None,
+    ) -> Iterator[SegmentationResult]:
+        """Process images sequentially.
+
+        Args:
+            image_paths: Absolute image paths.
+            callback: Optional progress observer.
+
+        Yields:
+            :class:`~src.interfaces.SegmentationResult` for successful images.
+        """
         self._ensure_loaded()
-        
-        results = []
-        for task in tasks:
-            image_id, image_path_str, split = task
-            image_path = Path(image_path_str)  # Convert string to Path object
-            
+        for img in image_paths:
+            item_id = img.stem
+            if callback:
+                callback.on_item_start(item_id)
             try:
-                result = self.segmentor.process_image(image_path)
-                has_detections = self.filter.filter_result(image_path, result)
-                
-                if has_detections and result and result.num_detections > 0:
-                    self.writer.write_annotation(image_path, result, split)
-                
-                results.append((image_id, image_path_str, split, True, has_detections, None))
-                
-            except Exception as e:
-                logger.error(f"Error processing {image_path.name}: {e}")
-                results.append((image_id, image_path_str, split, False, False, str(e)))
-        
-        return results
-    
-    def shutdown(self):
-        """Cleanup resources."""
-        if self.segmentor:
-            self.segmentor.cleanup()
-        self.segmentor = None
-        self.filter = None
-        self.writer = None
-    
-    def __enter__(self):
+                result = self._segmentor.process_image(img)  # type: ignore[union-attr]
+                has_det = self._filter.filter_result(img, result)  # type: ignore[union-attr]
+                split = ParallelProcessor._resolve_split(img)
+                if has_det:
+                    self._writer.write_annotation(img, result, split)  # type: ignore[union-attr]
+                if callback:
+                    callback.on_item_complete(item_id)
+                yield result
+            except Exception as exc:  # noqa: BLE001
+                _logger.error("Error processing %s: %s", img.name, exc)
+                if callback:
+                    callback.on_item_error(item_id, exc)
+
+    @trace
+    def shutdown(self, wait: bool = True) -> None:
+        """Release model resources.
+
+        Args:
+            wait: Unused for sequential processor; kept for API parity.
+        """
+        if self._segmentor is not None:
+            try:
+                self._segmentor.cleanup()  # type: ignore[union-attr]
+            except Exception:
+                pass
+        self._segmentor = None
+        self._filter = None
+        self._writer = None
+        _logger.info("SequentialProcessor shutdown complete")
+
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "SequentialProcessor":
         self.start()
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
+
+    def __exit__(self, *_: object) -> None:
         self.shutdown()
-        return False
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_loaded(self) -> None:
+        """Lazy-load pipeline components on first use."""
+        if self._segmentor is not None:
+            return
+        from .sam3_segmentor import SAM3Segmentor
+        from .result_filter import ResultFilter
+        from .annotation_writer import AnnotationWriter
+
+        cfg = self._config
+        self._segmentor = SAM3Segmentor(
+            cfg.model, cfg.pipeline  # type: ignore[attr-defined]
+        )
+        self._filter = ResultFilter(cfg)  # type: ignore[attr-defined]
+        self._writer = AnnotationWriter(cfg)  # type: ignore[attr-defined]
 
 
-def create_processor(config) -> 'ParallelProcessor | SequentialProcessor':
-    """
-    Factory function to create the appropriate processor.
-    
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def create_processor(
+    config: object,
+    registry: object,
+) -> "ParallelProcessor | SequentialProcessor":
+    """Factory -- return the appropriate processor for current config + hardware.
+
+    Calls :func:`~src.gpu_strategy.auto_select_strategy` to choose the GPU
+    strategy, then constructs a :class:`ParallelProcessor` if multiple
+    workers are configured, or a :class:`SequentialProcessor` otherwise.
+
     Args:
-        config: Configuration object
-        
+        config: Full :class:`~src.config_manager.Config` instance.
+        registry: :class:`~src.class_registry.ClassRegistry` instance.
+
     Returns:
-        ParallelProcessor or SequentialProcessor based on config
+        A :class:`ParallelProcessor` or :class:`SequentialProcessor`.
     """
-    num_workers = getattr(config.model, 'parallel_workers', 1)
-    
+    from .gpu_strategy import auto_select_strategy
+
+    num_workers = getattr(getattr(config, "model", None), "parallel_workers", 1)
+
     if num_workers > 1:
-        logger.info(f"Creating ParallelProcessor with {num_workers} workers")
-        return ParallelProcessor(config, num_workers)
-    else:
-        logger.info("Creating SequentialProcessor (single-process mode)")
-        return SequentialProcessor(config)
+        strategy = auto_select_strategy(config)
+        _logger.info(
+            "create_processor: ParallelProcessor -- %d workers, strategy=%s",
+            num_workers, strategy.backend,
+        )
+        return ParallelProcessor(config, strategy, registry, num_workers=num_workers)
+
+    _logger.info("create_processor: SequentialProcessor")
+    return SequentialProcessor(config, registry)

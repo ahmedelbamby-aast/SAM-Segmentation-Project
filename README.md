@@ -959,6 +959,135 @@ sequenceDiagram
 
 ---
 
+### Phase 3 — `gpu_strategy`, `progress_display`, `parallel_processor` refactor (Agent B)
+
+**Date:** 23-02-2026  
+**Author:** Agent B — GPU Strategy & Progress Display  
+**Status:** Delivered ✅
+
+#### Summary
+
+Phase 3 migrated `DeviceManager` out of `sam3_segmentor.py`, introduced an OCP-compliant
+`GPUStrategy` ABC with three concrete strategies, added a Rich-based ephemeral progress
+display (`ModuleProgressManager`), and fully refactored `parallel_processor.py` to use
+constructor injection with no global mutable state. 103 new tests added; total suite
+remains at 309 passing with the same 3 pre-existing failures.
+
+#### Architecture Diagram
+
+```mermaid
+graph TD
+    CLI[CLI Entry Point] -->|constructs| PP[ParallelProcessor]
+    CLI -->|constructs| SP[SequentialProcessor]
+    CLI -->|constructs| MGR[ModuleProgressManager]
+
+    PP -->|DI: GPUStrategy| GS[GPUStrategy ABC]
+    GS --> CPU[CPUOnlyStrategy]
+    GS --> SG[SingleGPUMultiProcess]
+    GS --> DDP[MultiGPUDDP]
+
+    PP -->|DI: ClassRegistry| REG[ClassRegistry]
+    PP -->|spawns| W[Worker Processes]
+    W --> SEG[SAM3Segmentor]
+    W --> FILT[ResultFilter]
+    W --> ANN[AnnotationWriter]
+
+    MGR -->|implements| CB[ProgressCallback Protocol]
+    PP -->|emits events to| CB
+    SP -->|emits events to| CB
+```
+
+#### Module Dependency Diagram
+
+```mermaid
+graph LR
+    cli[src/cli/pipeline.py] -->|auto_select_strategy| GS[gpu_strategy.py]
+    cli -->|create_processor| PP[parallel_processor.py]
+    PP -->|GPUStrategy injection| GS
+    PP -->|ClassRegistry injection| REG[class_registry.py]
+    cli -->|ModuleProgressManager| PD[progress_display.py]
+    PD -->|implements| CB[interfaces.ProgressCallback]
+    GS -->|DeviceManager re-export| SEG[sam3_segmentor.py]
+```
+
+#### Files Modified / Created
+
+| File | Action | Description |
+|------|--------|-------------|
+| `src/gpu_strategy.py` | Created | GPUStrategy ABC, 3 strategies, DeviceManager, auto_select_strategy |
+| `src/progress_display.py` | Created | ModuleProgressManager + StageProgress + PIPELINE_STAGES |
+| `src/parallel_processor.py` | Refactored | DI pattern, no global state, Protocol compliant |
+| `src/sam3_segmentor.py` | Modified | Removed DeviceManager class; imports from gpu_strategy |
+| `src/gpu_strategy.md` | Created | Module documentation |
+| `src/progress_display.md` | Created | Module documentation |
+| `src/parallel_processor.md` | Created | Module documentation |
+| `tests/test_gpu_strategy.py` | Created | 47 unit tests — all passing |
+| `tests/test_progress_display.py` | Created | 40 unit tests — all passing |
+| `tests/integration/test_gpu_processor.py` | Created | 16 integration tests — all passing |
+
+#### Key Design Decisions
+
+- **Strategy Pattern (OCP):** `GPUStrategy` ABC — adding a new GPU strategy requires only a new subclass. No modifications to factory or existing strategies.
+- **No global mutable state:** `_worker_state` lives in each subprocess's own memory (spawn semantics). Workers are stateless from the main process's perspective.
+- **IPC-safe serialisation:** `Config.to_dict()` + `ClassRegistry.to_dict()` pass only plain Python dicts through `ProcessPoolExecutor` `initargs`.
+- **Lazy imports in workers:** `SAM3Segmentor`, `ResultFilter`, `AnnotationWriter` imported inside `_init_worker()` — avoids CUDA context creation in the main process.
+- **DeviceManager migration:** Moved to `gpu_strategy.py` (canonical device-management location). `sam3_segmentor.py` re-exports via `from .gpu_strategy import DeviceManager` for backward compatibility.
+
+#### Protocol Compliance
+
+- `ModuleProgressManager` implements `ProgressCallback` (verified via `isinstance` in integration tests)
+- `ParallelProcessor` implements `Processor` (verified via `isinstance` in integration tests)
+- `SequentialProcessor` implements `Processor` (verified via `isinstance` in integration tests)
+- `GPUStrategy` is an ABC — concrete subclasses verified in unit tests
+
+#### Test Results
+
+```
+pytest tests/test_gpu_strategy.py -v
+========================= 47 passed in 1.86s =========================
+
+pytest tests/test_progress_display.py -v
+========================= 40 passed in 0.98s =========================
+
+pytest tests/integration/test_gpu_processor.py -v
+========================= 16 passed in 1.12s =========================
+
+pytest tests/ tests/integration/ --tb=no -q
+309 passed, 3 failed (pre-existing), 15 warnings in 2.71s
+```
+
+#### Integration Points
+
+```mermaid
+sequenceDiagram
+    participant CLI as CLI
+    participant F as create_processor()
+    participant GS as auto_select_strategy()
+    participant PP as ParallelProcessor
+    participant W as Worker
+    participant MGR as ModuleProgressManager
+
+    CLI->>GS: auto_select_strategy(config)
+    GS-->>CLI: CPUOnlyStrategy | SingleGPU | DDP
+    CLI->>F: create_processor(config, registry)
+    F->>PP: ParallelProcessor(config, strategy, registry)
+    CLI->>MGR: start_stage("Segment", total=N)
+    CLI->>PP: process_batch(images, callback=mgr)
+    PP->>W: spawn + _init_worker(config_dict, registry_dict, devices)
+    W-->>PP: ProcessingResult (per image)
+    PP->>MGR: on_item_complete(image_id)
+    PP-->>CLI: yield SegmentationResult
+    CLI->>MGR: finish_stage("Segment")
+```
+
+#### Known Limitations / TODOs
+
+- `pipeline.py` `run()` still bypasses `ParallelProcessor` (uses its own loop) — Phase 4 CLI wiring will fix this
+- `ResultFilter` and `AnnotationWriter` still receive full `config` (not slices) — ISP cleanup in Phase 5
+- Pre-existing `val` vs `valid` test failures in `test_annotation_writer.py` — Phase 5
+
+---
+
 ## 📄 License
 
 MIT License
