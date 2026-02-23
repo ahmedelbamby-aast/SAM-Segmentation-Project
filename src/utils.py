@@ -12,11 +12,12 @@ Date: 06-02-2026
 from pathlib import Path
 from datetime import datetime
 
-from .logging_system import LoggingSystem
+from .logging_system import LoggingSystem, trace
 
 _logger = LoggingSystem.get_logger(__name__)
 
 
+@trace
 def format_duration(seconds: float) -> str:
     """
     Format duration in seconds to human-readable string.
@@ -41,6 +42,7 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
+@trace
 def format_size(size_bytes: int) -> str:
     """
     Format file size to human-readable string.
@@ -58,6 +60,7 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} PB"
 
 
+@trace
 def estimate_eta(
     processed: int, 
     total: int, 
@@ -84,11 +87,13 @@ def estimate_eta(
     return format_duration(eta_seconds)
 
 
+@trace
 def get_timestamp() -> str:
     """Get current timestamp string for filenames."""
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+@trace
 def ensure_dir(path: Path) -> Path:
     """Ensure directory exists, create if needed."""
     path = Path(path)

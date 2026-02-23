@@ -33,6 +33,8 @@ from .interfaces import (
     PostProcessor,
     SegmentationResult,
     MaskData,
+    Tracker,
+    Uploader,
 )
 from .class_registry import ClassRegistry
 from .utils import format_duration, estimate_eta
@@ -60,8 +62,8 @@ class SegmentationPipeline:
         *,
         registry: Optional[ClassRegistry] = None,
         preprocessor: Optional[object] = None,
-        tracker: Optional[object] = None,
-        uploader: Optional[object] = None,
+        tracker: Optional[Tracker] = None,
+        uploader: Optional[Uploader] = None,
         post_processor: Optional[PostProcessor] = None,
     ) -> None:
         """Initialise pipeline with configuration and optional injected deps.
@@ -69,16 +71,17 @@ class SegmentationPipeline:
         All heavy dependencies are created from *config* by default.  Pass
         explicit objects to override them (useful for testing or custom wiring).
 
-        Dependencies are accepted as ``object`` to satisfy DIP — concrete
-        classes are only imported inside the factory branches.  Callers may
-        inject any object satisfying the corresponding Protocol.
+        Dependencies are accepted via Protocol types from
+        ``src/interfaces.py`` to satisfy DIP — concrete classes are only
+        imported inside the factory branches.  Callers may inject any
+        object satisfying the corresponding Protocol.
 
         Args:
             config: Full pipeline configuration.
             registry: Optional :class:`~src.class_registry.ClassRegistry`.
             preprocessor: Optional preprocessor (satisfies scanning API).
-            tracker: Optional progress tracker.
-            uploader: Optional uploader.
+            tracker: Optional :class:`~src.interfaces.Tracker`.
+            uploader: Optional :class:`~src.interfaces.Uploader`.
             post_processor: Optional :class:`~src.interfaces.PostProcessor`.
         """
         self.config = config
@@ -209,7 +212,7 @@ class SegmentationPipeline:
         train_count = splits.count('train')
         valid_count = splits.count('valid')
         test_count = splits.count('test')
-        _logger.info(f"Split distribution - Train: {train_count}, Valid: {valid_count}, Test: {test_count}")
+        _logger.info("Split distribution - Train: %d, Valid: %d, Test: %d", train_count, valid_count, test_count)
         
         return splits
     

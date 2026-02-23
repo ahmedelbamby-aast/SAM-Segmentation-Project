@@ -93,12 +93,13 @@ class HFModelDownloader:
             # Try to get user info to validate token
             api = self._hf_api.HfApi(token=self.token)
             user_info = api.whoami()
-            _logger.info(f"Authenticated as: {user_info.get('name', 'Unknown')}")
+            _logger.info("Authenticated as: %s", user_info.get('name', 'Unknown'))
             return True
         except Exception as e:
-            _logger.error(f"Authentication failed: {e}")
+            _logger.error("Authentication failed: %s", e)
             return False
     
+    @trace
     def get_model_info(self) -> Optional[Dict[str, Any]]:
         """
         Get information about the model repository.
@@ -117,9 +118,10 @@ class HFModelDownloader:
                 'last_modified': str(info.last_modified) if info.last_modified else 'Unknown'
             }
         except Exception as e:
-            _logger.error(f"Failed to get model info: {e}")
+            _logger.error("Failed to get model info: %s", e)
             return None
     
+    @trace
     def list_files(self) -> List[str]:
         """
         List all files in the model repository.
@@ -132,7 +134,7 @@ class HFModelDownloader:
             files = api.list_repo_files(repo_id=self.repo_id, repo_type="model")
             return files
         except Exception as e:
-            _logger.error(f"Failed to list files: {e}")
+            _logger.error("Failed to list files: %s", e)
             return []
     
     @trace
@@ -157,11 +159,11 @@ class HFModelDownloader:
         
         # Check if already exists
         if dest_path.exists() and not force:
-            _logger.info(f"File already exists: {dest_path}")
+            _logger.info("File already exists: %s", dest_path)
             return dest_path
         
         try:
-            _logger.info(f"Downloading {filename} from {self.repo_id}...")
+            _logger.info("Downloading %s from %s...", filename, self.repo_id)
             
             # Use hf_hub_download for resumable downloads
             downloaded_path = self._hf_api.hf_hub_download(
@@ -173,11 +175,11 @@ class HFModelDownloader:
                 resume_download=True,
             )
             
-            _logger.info(f"Downloaded: {downloaded_path}")
+            _logger.info("Downloaded: %s", downloaded_path)
             return Path(downloaded_path)
             
         except Exception as e:
-            _logger.error(f"Failed to download {filename}: {e}")
+            _logger.error("Failed to download %s: %s", filename, e)
             return None
     
     @trace
@@ -200,10 +202,10 @@ class HFModelDownloader:
         
         for model_file in self.MODEL_FILES:
             if not model_file.required and not include_optional:
-                _logger.debug(f"Skipping optional file: {model_file.filename}")
+                _logger.debug("Skipping optional file: %s", model_file.filename)
                 continue
             
-            _logger.info(f"Processing: {model_file.filename} - {model_file.description}")
+            _logger.info("Processing: %s - %s", model_file.filename, model_file.description)
             path = self.download_file(model_file.filename, force=force)
             results[model_file.filename] = path
         
@@ -223,18 +225,19 @@ class HFModelDownloader:
             path = self.output_dir / model_file.filename
             
             if not path.exists():
-                _logger.error(f"Required file missing: {model_file.filename}")
+                _logger.error("Required file missing: %s", model_file.filename)
                 return False
             
             # Check file is not empty
             if path.stat().st_size == 0:
-                _logger.error(f"File is empty: {model_file.filename}")
+                _logger.error("File is empty: %s", model_file.filename)
                 return False
             
-            _logger.info(f"Verified: {model_file.filename} ({path.stat().st_size / 1e9:.2f} GB)")
+            _logger.info("Verified: %s (%.2f GB)", model_file.filename, path.stat().st_size / 1e9)
         
         return True
     
+    @trace
     def get_download_status(self) -> Dict[str, Dict[str, Any]]:
         """
         Get status of model files.
@@ -301,7 +304,7 @@ def download_sam3_model(
     # Check results
     failed = [f for f, p in results.items() if p is None]
     if failed:
-        _logger.error(f"Failed to download: {failed}")
+        _logger.error("Failed to download: %s", failed)
         return False
     
     # Verify

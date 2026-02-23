@@ -31,7 +31,6 @@ from .logging_system import LoggingSystem, trace
 from .utils import estimate_eta
 
 try:
-    from rich.columns import Columns
     from rich.live import Live
     from rich.progress import (
         BarColumn,
@@ -43,7 +42,6 @@ try:
         TimeElapsedColumn,
         TimeRemainingColumn,
     )
-    from rich.table import Table
 
     _RICH_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -276,6 +274,7 @@ class ModuleProgressManager:
     # ProgressCallback protocol
     # ------------------------------------------------------------------
 
+    @trace
     def on_item_start(self, item_id: str) -> None:
         """Signal that *item_id* has begun processing in the active stage.
 
@@ -287,6 +286,7 @@ class ModuleProgressManager:
         # Nothing to update on start — stage is already shown
         pass
 
+    @trace
     def on_item_complete(self, item_id: str) -> None:
         """Signal that *item_id* finished processing successfully.
 
@@ -303,6 +303,7 @@ class ModuleProgressManager:
             sp.completed += 1
             self._refresh_task(sp)
 
+    @trace
     def on_item_error(self, item_id: str, error: Exception) -> None:
         """Signal that *item_id* raised *error* during processing.
 
@@ -326,6 +327,7 @@ class ModuleProgressManager:
     # caller explicitly targets a stage rather than relying on active_stage)
     # ------------------------------------------------------------------
 
+    @trace
     def on_stage_item_complete(self, stage_name: str, item_id: str) -> None:
         """``on_item_complete`` targeted at a specific stage.
 
@@ -340,6 +342,7 @@ class ModuleProgressManager:
             sp.completed += 1
             self._refresh_task(sp)
 
+    @trace
     def on_stage_item_error(self, stage_name: str, item_id: str, error: Exception) -> None:
         """``on_item_error`` targeted at a specific stage.
 

@@ -268,6 +268,12 @@ class DistributedUploader:
         return self._pool.get_stats()
 
     @trace
+    def reset_stats(self) -> None:
+        """Reset upload statistics by clearing the futures list."""
+        self._pool._futures.clear()
+        _logger.debug("DistributedUploader stats reset")
+
+    @trace
     def shutdown(self, wait: bool = True) -> None:
         """
         Gracefully shut down the uploader.
@@ -296,16 +302,16 @@ class DistributedUploader:
                 self.enabled = False
                 return
 
-            _logger.info(f"Configured {len(self.upload_targets)} upload target(s):")
+            _logger.info("Configured %d upload target(s):", len(self.upload_targets))
             for api_key, workspace, project, is_pred in self.upload_targets:
                 pred_str = "prediction" if is_pred else "ground truth"
-                _logger.info(f"  → {workspace}/{project} ({pred_str})")
+                _logger.info("  \u2192 %s/%s (%s)", workspace, project, pred_str)
 
         except ImportError:
             _logger.error("Roboflow package not installed. Run: pip install roboflow")
             self.enabled = False
         except Exception as e:
-            _logger.error(f"Failed to initialize Roboflow: {e}")
+            _logger.error("Failed to initialize Roboflow: %s", e)
             self.enabled = False
 
     def _upload_with_retry(self, batch_dir: Path, batch_id: int, split: str) -> bool:
@@ -332,7 +338,7 @@ class DistributedUploader:
         
         if all_success:
             self.tracker.mark_batch_uploaded(batch_id)
-            _logger.info(f"Batch {batch_id} uploaded to all {len(self.upload_targets)} target(s)")
+            _logger.info("Batch %d uploaded to all %d target(s)", batch_id, len(self.upload_targets))
         else:
             self.tracker.mark_batch_error(batch_id, "Failed to upload to one or more targets")
         
@@ -345,8 +351,11 @@ class DistributedUploader:
         """Upload batch to a single workspace/project target."""
         for attempt in range(self.config.retry_attempts):
             try:
-                _logger.info(f"Uploading batch {batch_id} to {workspace_name}/{project_name} "
-                           f"(attempt {attempt + 1}/{self.config.retry_attempts})")
+                _logger.info(
+                    "Uploading batch %d to %s/%s (attempt %d/%d)",
+                    batch_id, workspace_name, project_name,
+                    attempt + 1, self.config.retry_attempts,
+                )
                 
                 # Create Roboflow connection for this target
                 rf = self._roboflow_cls(api_key=api_key)
@@ -363,19 +372,23 @@ class DistributedUploader:
                     is_prediction=is_prediction
                 )
                 
-                _logger.info(f"✓ Batch {batch_id} uploaded to {workspace_name}/{project_name}")
+                _logger.info("✓ Batch %d uploaded to %s/%s", batch_id, workspace_name, project_name)
                 return True
                 
             except Exception as e:
-                _logger.warning(f"Batch {batch_id} → {workspace_name}/{project_name} "
-                              f"attempt {attempt + 1} failed: {e}")
+                _logger.warning(
+                    "Batch %d \u2192 %s/%s attempt %d failed: %s",
+                    batch_id, workspace_name, project_name,
+                    attempt + 1, e,
+                )
                 
                 if attempt < self.config.retry_attempts - 1:
                     time.sleep(self.config.retry_delay)
         
-        _logger.error(f"✗ Batch {batch_id} failed to upload to {workspace_name}/{project_name}")
+        _logger.error("✗ Batch %d failed to upload to %s/%s", batch_id, workspace_name, project_name)
         return False
 
+    @trace
     def retry_failed_batches(self, job_id: int):
         """
         Retry uploading failed batches for a job.
@@ -393,7 +406,7 @@ class DistributedUploader:
             _logger.info("No pending batches to retry")
             return
         
-        _logger.info(f"Retrying {len(pending_batches)} failed batches")
+        _logger.info("Retrying %d failed batches", len(pending_batches))
         
         for batch in pending_batches:
             self.queue_batch(
@@ -402,6 +415,7 @@ class DistributedUploader:
                 split=batch.get('split', 'train')
             )
     
+    @trace
     def upload_neither_folder(self, neither_dir: Path) -> bool:
         """
         Upload the 'neither' folder (images with no detections) as a single batch.
@@ -424,7 +438,7 @@ class DistributedUploader:
         upload_neither = getattr(self.config, 'upload_neither', False)
         if not upload_neither:
             _logger.info("Neither folder upload disabled (upload_neither: false)")
-            _logger.info(f"Neither folder preserved for manual review at: {neither_dir}")
+            _logger.info("Neither folder preserved for manual review at: %s", neither_dir)
             return True
         
         neither_dir = Path(neither_dir)
@@ -440,7 +454,7 @@ class DistributedUploader:
             _logger.info("Neither folder is empty, skipping upload")
             return True
         
-        _logger.info(f"Uploading {len(image_files)} images from neither folder...")
+        _logger.info("Uploading %d images from neither folder...", len(image_files))
         
         # Upload to ALL configured workspaces/projects
         all_success = True
@@ -460,21 +474,31 @@ class DistributedUploader:
                         is_prediction=is_prediction
                     )
                     
-                    _logger.info(f"Neither folder uploaded to {workspace_name}/{project_name} ({len(image_files)} images)")
+                    _logger.info(
+                        "Neither folder uploaded to %s/%s (%d images)",
+                        workspace_name, project_name, len(image_files),
+                    )
                     break  # Success, move to next target
                     
                 except Exception as e:
-                    _logger.warning(f"Neither folder upload to {workspace_name}/{project_name} attempt {attempt + 1} failed: {e}")
+                    _logger.warning(
+                        "Neither folder upload to %s/%s attempt %d failed: %s",
+                        workspace_name, project_name, attempt + 1, e,
+                    )
                     if attempt < self.config.retry_attempts - 1:
                         time.sleep(self.config.retry_delay)
                     else:
-                        _logger.error(f"Neither folder upload to {workspace_name}/{project_name} failed after {self.config.retry_attempts} attempts")
+                        _logger.error(
+                            "Neither folder upload to %s/%s failed after %d attempts",
+                            workspace_name, project_name, self.config.retry_attempts,
+                        )
                         all_success = False
         
         if all_success:
-            _logger.info(f"Neither folder uploaded to all {len(self.upload_targets)} target(s)")
+            _logger.info("Neither folder uploaded to all %d target(s)", len(self.upload_targets))
         return all_success
     
+    @trace
     def should_upload_neither(self) -> bool:
         """Check if neither folder upload is enabled."""
         return getattr(self.config, 'upload_neither', False)

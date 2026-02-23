@@ -20,7 +20,6 @@ Date: 22-02-2026
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
@@ -342,9 +341,11 @@ class MaskPostProcessor:
             inference_time_ms=original.inference_time_ms, device=original.device,
         )
 
+    @trace
     def calculate_mask_iou(self, m1: np.ndarray, m2: np.ndarray) -> float:
         return _calculate_mask_iou(m1, m2)
 
+    @trace
     def calculate_mask_overlap(self, m1: np.ndarray, m2: np.ndarray) -> Tuple[float, float]:
         return _calculate_mask_overlap(m1, m2)
 

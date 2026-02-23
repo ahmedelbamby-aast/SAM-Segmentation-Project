@@ -78,6 +78,7 @@ class ImagePreprocessor:
             _logger.debug("Image validation failed for %s: %s", image_path, e)
             return False
     
+    @trace
     def set_fast_scan(self, enabled: bool = True) -> None:
         """Enable/disable fast scanning (skips cv2.imread validation)."""
         self._fast_scan = enabled

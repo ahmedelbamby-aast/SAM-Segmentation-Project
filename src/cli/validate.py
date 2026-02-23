@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import List
 
-from pathlib import Path
 from ..logging_system import LoggingSystem, trace
 from ..config_manager import load_config
 from ..validator import Validator

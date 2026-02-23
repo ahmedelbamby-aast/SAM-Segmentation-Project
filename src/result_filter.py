@@ -7,7 +7,7 @@ Date: 06-02-2026
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .logging_system import LoggingSystem, trace
 
@@ -154,10 +154,12 @@ class ResultFilter:
             'neither_folder': str(self.neither_dir)
         }
     
+    @trace
     def get_filtered_images(self) -> List[Path]:
         """Get list of images that were filtered (no detections)."""
         return self._filtered_images.copy()
     
+    @trace
     def get_neither_count(self) -> int:
         """Get count of images in neither folder."""
         images_dir = self.neither_dir / 'images'

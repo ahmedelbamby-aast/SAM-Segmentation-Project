@@ -131,7 +131,7 @@ class ProgressTracker:
                     if hasattr(self._local, 'conn') and self._local.conn:
                         try:
                             self._local.conn.close()
-                        except:
+                        except Exception:
                             pass
                         self._local.conn = None
                 else:
@@ -216,6 +216,7 @@ class ProgressTracker:
         _logger.info("Created job '%s' with %d images", name, total_images)
         return job_id
     
+    @trace
     def get_job_id(self, name: str) -> Optional[int]:
         """Get job ID by name."""
         row = self.conn.execute(
@@ -223,6 +224,7 @@ class ProgressTracker:
         ).fetchone()
         return row[0] if row else None
     
+    @trace
     def get_pending_images(self, job_id: int, limit: int = 100) -> List[Tuple[int, Path, str]]:
         """
         Get unprocessed images for a job.
@@ -242,6 +244,7 @@ class ProgressTracker:
         )
         return [(row['id'], Path(row['path']), row['split']) for row in cursor.fetchall()]
     
+    @trace
     def get_image_split(self, image_id: int) -> Optional[str]:
         """Get the split assignment for an image."""
         row = self.conn.execute(
@@ -249,6 +252,7 @@ class ProgressTracker:
         ).fetchone()
         return row['split'] if row else None
     
+    @trace
     def mark_processing(self, image_ids: List[int]) -> None:
         """Mark images as currently being processed."""
         self.conn.executemany(
@@ -257,6 +261,7 @@ class ProgressTracker:
         )
         self.conn.commit()
     
+    @trace
     def reset_stuck_images(self, job_id: int) -> int:
         """
         Reset images stuck in 'processing' state back to 'pending'.
@@ -277,6 +282,7 @@ class ProgressTracker:
             _logger.info("Reset %d stuck images to pending", count)
         return count
 
+    @trace
     def reset_error_images(self, job_id: int) -> int:
         """
         Reset images with 'error' status back to 'pending' for retry.
@@ -346,6 +352,7 @@ class ProgressTracker:
         result['pending_count'] = result['total_images'] - result['processed_count'] - result['error_count']
         return result
     
+    @trace
     def get_progress_by_split(self, job_id: int) -> Dict[str, Dict[str, int]]:
         """Get progress broken down by split."""
         cursor = self.conn.execute("""
@@ -361,6 +368,7 @@ class ProgressTracker:
         
         return result
     
+    @trace
     def create_batch(self, job_id: int, batch_num: int, image_count: int) -> int:
         """
         Create a new upload batch.
@@ -381,6 +389,7 @@ class ProgressTracker:
         _logger.info("Created batch %d with %d images", batch_num, image_count)
         return cursor.lastrowid
     
+    @trace
     def mark_batch_uploaded(self, batch_id: int) -> None:
         """Mark batch as successfully uploaded to Roboflow."""
         self.conn.execute(
@@ -390,6 +399,7 @@ class ProgressTracker:
         self.conn.commit()
         _logger.info("Batch %d marked as uploaded", batch_id)
     
+    @trace
     def mark_batch_error(self, batch_id: int, error_msg: str) -> None:
         """Mark batch upload as failed."""
         self.conn.execute(
@@ -398,6 +408,7 @@ class ProgressTracker:
         )
         self.conn.commit()
     
+    @trace
     def get_pending_batches(self, job_id: int) -> List[Dict[str, Any]]:
         """Get batches that haven't been uploaded yet."""
         cursor = self.conn.execute(
@@ -406,6 +417,7 @@ class ProgressTracker:
         )
         return [dict(row) for row in cursor.fetchall()]
     
+    @trace
     def get_uploaded_batches(self, job_id: int) -> List[Dict[str, Any]]:
         """Get successfully uploaded batches."""
         cursor = self.conn.execute(
@@ -414,6 +426,7 @@ class ProgressTracker:
         )
         return [dict(row) for row in cursor.fetchall()]
     
+    @trace
     def reset_processing_images(self, job_id: int) -> None:
         """Reset images stuck in 'processing' state back to 'pending'."""
         cursor = self.conn.execute(
@@ -424,6 +437,7 @@ class ProgressTracker:
         if cursor.rowcount > 0:
             _logger.info("Reset %d stuck images to pending", cursor.rowcount)
     
+    @trace
     def close(self) -> None:
         """Close database connection."""
         if hasattr(self._local, 'conn') and self._local.conn:

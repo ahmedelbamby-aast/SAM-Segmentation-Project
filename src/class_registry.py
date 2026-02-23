@@ -14,7 +14,6 @@ Date: 22-02-2026
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
@@ -217,6 +216,7 @@ class ClassRegistry:
             )
         return self._output_names[output_class_id]
 
+    @trace
     def get_yolo_names(self) -> Dict[int, str]:
         """Return the ``names`` dict for a YOLO ``data.yaml`` file.
 
@@ -225,6 +225,7 @@ class ClassRegistry:
         """
         return {i: name for i, name in enumerate(self._output_names)}
 
+    @trace
     def get_output_id_for_prompt_name(self, prompt_name: str) -> int:
         """Look up the output class ID for a prompt name (not prompt index).
 
@@ -248,6 +249,7 @@ class ClassRegistry:
     # Serialisation — for multiprocessing IPC
     # ------------------------------------------------------------------
 
+    @trace
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a plain dict suitable for IPC (pickle-free).
 
@@ -260,6 +262,7 @@ class ClassRegistry:
         }
 
     @classmethod
+    @trace
     def from_dict(cls, data: Dict[str, Any]) -> "ClassRegistry":
         """Reconstruct a ``ClassRegistry`` from a serialised dict.
 
@@ -279,6 +282,7 @@ class ClassRegistry:
     # ------------------------------------------------------------------
 
     @classmethod
+    @trace
     def from_config(cls, config: Any) -> "ClassRegistry":
         """Build a ``ClassRegistry`` from a ``ModelConfig`` or any object with
         ``prompts`` and optionally ``class_remapping`` attributes.

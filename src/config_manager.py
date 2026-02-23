@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Any, Dict
 
-from .logging_system import LoggingSystem
+from .logging_system import LoggingSystem, trace
 
 _logger = LoggingSystem.get_logger(__name__)
 
@@ -229,6 +229,7 @@ def _dict_to_dataclass(data: Dict, cls: type) -> Any:
     return cls(**filtered_data)
 
 
+@trace
 def load_config(config_path: str) -> Config:
     """
     Load and validate configuration from YAML file.
@@ -295,6 +296,7 @@ def load_config(config_path: str) -> Config:
     return config
 
 
+@trace
 def validate_config(config: Config) -> List[str]:
     """
     Validate configuration and return list of warnings.
@@ -326,6 +328,7 @@ def validate_config(config: Config) -> List[str]:
     return warnings
 
 
+@trace
 def load_config_from_dict(raw: Dict[str, Any]) -> Config:
     """
     Load configuration from a dictionary (for worker processes).

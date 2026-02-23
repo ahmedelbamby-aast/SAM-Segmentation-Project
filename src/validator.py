@@ -97,7 +97,7 @@ class ValidationCache:
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
-        _logger.debug(f"ValidationCache opened at {db_path}")
+        _logger.debug("ValidationCache opened at %s", db_path)
 
     # ------------------------------------------------------------------
     # Connection management
@@ -118,6 +118,7 @@ class ValidationCache:
         self.conn.executescript(self._SCHEMA)
         self.conn.commit()
 
+    @trace
     def close(self) -> None:
         """Close the database connection."""
         if self._conn:
@@ -165,10 +166,12 @@ class ValidationCache:
         )
         cached_count: int = cursor.fetchone()[0]
         _logger.info(
-            f"Cached {cached_count} missing images for job '{job_name}'"
+            "Cached %d missing images for job '%s'",
+            cached_count, job_name,
         )
         return cached_count
 
+    @trace
     def mark_processed(self, job_name: str, paths: List[Path]) -> int:
         """Mark a list of images as processed.
 
@@ -189,6 +192,7 @@ class ValidationCache:
         self.conn.commit()
         return cursor.rowcount
 
+    @trace
     def clear(self, job_name: str) -> int:
         """Delete all cached entries for a job.
 
@@ -205,7 +209,8 @@ class ValidationCache:
         self.conn.commit()
         deleted: int = cursor.rowcount
         _logger.info(
-            f"Cleared {deleted} cached entries for job '{job_name}'"
+            "Cleared %d cached entries for job '%s'",
+            deleted, job_name,
         )
         return deleted
 
@@ -243,6 +248,7 @@ class ValidationCache:
             (Path(row["path"]), row["split"]) for row in cursor.fetchall()
         ]
 
+    @trace
     def list_jobs(self) -> List[Dict[str, Any]]:
         """Return summary statistics for all validation jobs.
 
@@ -309,8 +315,8 @@ class Validator:
 
         self.cache = ValidationCache(db_path)
         _logger.info(
-            f"Validator initialised — input: {self.input_dir}, "
-            f"output: {self.output_dir}"
+            "Validator initialised \u2014 input: %s, output: %s",
+            self.input_dir, self.output_dir,
         )
 
     # ------------------------------------------------------------------
@@ -328,13 +334,13 @@ class Validator:
 
         if not self.input_dir.exists():
             _logger.warning(
-                f"Input directory does not exist: {self.input_dir}"
+                "Input directory does not exist: %s", self.input_dir
             )
             return files_by_split
 
         _logger.info(
-            f"Scanning input: {self.input_dir} "
-            f"(mode={self.input_mode}, formats={self.supported_formats})"
+            "Scanning input: %s (mode=%s, formats=%s)",
+            self.input_dir, self.input_mode, self.supported_formats,
         )
 
         if self.input_mode == "pre-split":
@@ -343,16 +349,16 @@ class Validator:
                 if split_dir.exists():
                     files_by_split[split] = self._scan_folder(split_dir)
                     _logger.debug(
-                        f"  {split}/: {len(files_by_split[split])} images"
+                        "  %s/: %d images", split, len(files_by_split[split])
                     )
                 elif split != "neither":
-                    _logger.debug(f"  {split}/: directory not found")
+                    _logger.debug("  %s/: directory not found", split)
         else:
             files_by_split["all"] = self._scan_folder(self.input_dir)
-            _logger.debug(f"  all: {len(files_by_split['all'])} images")
+            _logger.debug("  all: %d images", len(files_by_split['all']))
 
         total = sum(len(v) for v in files_by_split.values())
-        _logger.info(f"Input scan complete: {total} images found")
+        _logger.info("Input scan complete: %d images found", total)
         return files_by_split
 
     def _scan_folder(self, folder: Path) -> List[Path]:
@@ -384,7 +390,7 @@ class Validator:
             processed_by_split[split] = stems
             if stems:
                 _logger.debug(
-                    f"Found {len(stems)} annotations in {split}/labels"
+                    "Found %d annotations in %s/labels", len(stems), split
                 )
 
         neither_dir = self.output_dir / "neither" / "images"
@@ -397,14 +403,14 @@ class Validator:
                     neither_stems.add(img_file.stem)
             if neither_stems:
                 _logger.debug(
-                    f"Found {len(neither_stems)} images in neither/images"
+                    "Found %d images in neither/images", len(neither_stems)
                 )
         processed_by_split["neither"] = neither_stems
 
         total = sum(len(v) for v in processed_by_split.values())
         _logger.info(
-            f"Output scan complete: {total} annotations/images "
-            "(including neither)"
+            "Output scan complete: %d annotations/images "
+            "(including neither)", total,
         )
         return processed_by_split
 
@@ -457,7 +463,7 @@ class Validator:
             missing_by_split=missing_by_split,
         )
         _logger.info(
-            f"Comparison complete: {result.missing_count} missing images"
+            "Comparison complete: %d missing images", result.missing_count
         )
         return result
 
@@ -465,12 +471,14 @@ class Validator:
     # Public delegation helpers (backward-compatible API)
     # ------------------------------------------------------------------
 
+    @trace
     def cache_missing_images(
         self, result: ValidationResult, job_name: str
     ) -> int:
         """Delegate to :meth:`ValidationCache.store`."""
         return self.cache.store(result, job_name)
 
+    @trace
     def get_cached_missing_images(
         self,
         job_name: str,
@@ -479,16 +487,19 @@ class Validator:
         """Delegate to :meth:`ValidationCache.retrieve`."""
         return self.cache.retrieve(job_name, unprocessed_only)
 
+    @trace
     def mark_cached_processed(
         self, job_name: str, paths: List[Path]
     ) -> int:
         """Delegate to :meth:`ValidationCache.mark_processed`."""
         return self.cache.mark_processed(job_name, paths)
 
+    @trace
     def clear_validation_cache(self, job_name: str) -> int:
         """Delegate to :meth:`ValidationCache.clear`."""
         return self.cache.clear(job_name)
 
+    @trace
     def get_validation_jobs(self) -> List[Dict[str, Any]]:
         """Delegate to :meth:`ValidationCache.list_jobs`."""
         return self.cache.list_jobs()
@@ -518,15 +529,16 @@ class Validator:
                 f"validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
 
-        _logger.info(f"Starting validation job: {job_name}")
+        _logger.info("Starting validation job: %s", job_name)
         result = self.compare_datasets()
-        _logger.info(f"Validation summary:\n{result.summary()}")
+        _logger.info("Validation summary:\n%s", result.summary())
 
         if cache_results and result.missing_count > 0:
             cached = self.cache_missing_images(result, job_name)
             _logger.info(
-                f"Cached {cached} missing images for job '{job_name}' — "
-                f"run pipeline with --job-name {job_name} to process them"
+                "Cached %d missing images for job '%s' \u2014 "
+                "run pipeline with --job-name %s to process them",
+                cached, job_name, job_name,
             )
         elif result.is_complete:
             _logger.info("All input images have been processed!")
@@ -537,6 +549,7 @@ class Validator:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    @trace
     def close(self) -> None:
         """Close the underlying :class:`ValidationCache` connection."""
         self.cache.close()

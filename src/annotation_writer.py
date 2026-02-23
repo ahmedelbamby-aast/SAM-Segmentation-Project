@@ -129,6 +129,7 @@ class DatasetMetadataWriter:
         self.output_dir = output_dir
         self.class_names = class_names
 
+    @trace
     def write_classes_files(self) -> None:
         """Write ``_classes.txt`` into every split dir and ``classes.txt`` at root."""
         for split in ['train', 'valid', 'test']:
@@ -144,6 +145,7 @@ class DatasetMetadataWriter:
 
         _logger.debug("Wrote class files to all split directories")
 
+    @trace
     def write_data_yaml(self) -> Path:
         """Generate ``data.yaml`` for YOLOv11 training.
 
@@ -165,7 +167,7 @@ class DatasetMetadataWriter:
         with open(yaml_path, 'w', encoding='utf-8') as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
-        _logger.info(f"Generated data.yaml at {yaml_path}")
+        _logger.info("Generated data.yaml at %s", yaml_path)
         return yaml_path
 
 
@@ -199,7 +201,7 @@ class AnnotationWriter:
         self._metadata = DatasetMetadataWriter(self.output_dir, self.class_names)
 
         self._setup_directories()
-        _logger.info(f"AnnotationWriter initialised, output: {self.output_dir}")
+        _logger.info("AnnotationWriter initialised, output: %s", self.output_dir)
 
     # ------------------------------------------------------------------
     # Setup
@@ -217,6 +219,7 @@ class AnnotationWriter:
     # Delegation helpers (keep public API stable for callers & tests)
     # ------------------------------------------------------------------
 
+    @trace
     def mask_to_polygon(
         self,
         mask: np.ndarray,
@@ -233,6 +236,7 @@ class AnnotationWriter:
         """
         return self._converter.mask_to_polygon(mask, simplify_epsilon)
 
+    @trace
     def masks_to_polygons(
         self,
         masks: np.ndarray,
@@ -285,7 +289,7 @@ class AnnotationWriter:
         polygons = self._converter.masks_to_polygons(result.masks, result.class_ids)
 
         if not polygons:
-            logger.debug(f"No valid polygons for {image_path.name}")
+            _logger.debug("No valid polygons for %s", image_path.name)
             return None
 
         lines = []
@@ -296,7 +300,7 @@ class AnnotationWriter:
         with open(label_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
 
-        _logger.debug(f"Wrote {len(polygons)} annotations to {label_path.name}")
+        _logger.debug("Wrote %d annotations to %s", len(polygons), label_path.name)
         return label_path
 
     @trace
@@ -358,6 +362,7 @@ class AnnotationWriter:
 
         return stats
 
+    @trace
     def reset_stats(self) -> None:
         """Reset annotation statistics.
 
