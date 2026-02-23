@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import List
 
+from pathlib import Path
 from ..logging_system import LoggingSystem, trace
 from ..config_manager import load_config
 from ..validator import Validator
@@ -97,8 +98,8 @@ def main(argv: List[str] = None) -> int:
         parser.print_help()
         return 0
 
-    # 5. Wire concrete class (ISP: validator needs pipeline + progress config slices)
-    validator = Validator(config)
+    # 5. Wire concrete class — ISP: pass only pipeline config slice
+    validator = Validator(config.pipeline, db_path=Path(config.progress.db_path))
 
     # 6. Run validation
     if args.validate:

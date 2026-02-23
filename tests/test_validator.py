@@ -154,7 +154,7 @@ class TestValidator:
     
     def test_scan_input_directory_empty(self, sample_config, temp_dirs):
         """Test scanning empty input directory."""
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.scan_input_directory()
             assert "train" in result
@@ -171,7 +171,7 @@ class TestValidator:
         create_test_image(temp_dirs["input_dir"] / "train" / "img2.png")
         create_test_image(temp_dirs["input_dir"] / "valid" / "img3.jpg")
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.scan_input_directory()
             assert len(result["train"]) == 2
@@ -182,7 +182,7 @@ class TestValidator:
     
     def test_scan_output_directory_empty(self, sample_config, temp_dirs):
         """Test scanning empty output directory."""
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.scan_output_directory()
             assert all(len(v) == 0 for v in result.values())
@@ -196,7 +196,7 @@ class TestValidator:
         create_test_annotation(temp_dirs["output_dir"] / "train" / "labels", "img2")
         create_test_annotation(temp_dirs["output_dir"] / "valid" / "labels", "img3")
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.scan_output_directory()
             assert len(result["train"]) == 2
@@ -211,7 +211,7 @@ class TestValidator:
         create_test_image(temp_dirs["input_dir"] / "train" / "img1.jpg")
         create_test_annotation(temp_dirs["output_dir"] / "train" / "labels", "img1")
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.compare_datasets()
             assert result.input_count == 1
@@ -231,7 +231,7 @@ class TestValidator:
         # Only create annotation for img1
         create_test_annotation(temp_dirs["output_dir"] / "train" / "labels", "img1")
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.compare_datasets()
             assert result.input_count == 3
@@ -252,7 +252,7 @@ class TestValidator:
         create_test_image(temp_dirs["input_dir"] / "train" / "img1.jpg")
         create_test_image(temp_dirs["input_dir"] / "train" / "img2.jpg")
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.compare_datasets()
             cached = validator.cache_missing_images(result, "test_job")
@@ -270,7 +270,7 @@ class TestValidator:
         create_test_image(temp_dirs["input_dir"] / "train" / "img1.jpg")
         img_path = temp_dirs["input_dir"] / "train" / "img1.jpg"
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.compare_datasets()
             validator.cache_missing_images(result, "test_job")
@@ -292,7 +292,7 @@ class TestValidator:
         """Test clearing validation cache."""
         create_test_image(temp_dirs["input_dir"] / "train" / "img1.jpg")
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.compare_datasets()
             validator.cache_missing_images(result, "test_job")
@@ -312,7 +312,7 @@ class TestValidator:
         create_test_image(temp_dirs["input_dir"] / "train" / "img1.jpg")
         create_test_image(temp_dirs["input_dir"] / "train" / "img2.jpg")
         
-        validator = Validator(sample_config, db_path=temp_dirs["db_path"])
+        validator = Validator(sample_config.pipeline, db_path=temp_dirs["db_path"])
         try:
             result = validator.compare_datasets()
             validator.cache_missing_images(result, "job1")

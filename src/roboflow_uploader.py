@@ -1,41 +1,199 @@
 """
 Async distributed Roboflow uploader with retry logic.
 
+SRP breakdown:
+  - :class:`AsyncWorkerPool`  — generic background queue + thread + executor only
+  - :class:`DistributedUploader` — Roboflow-specific upload logic only;
+    delegates queue management to :class:`AsyncWorkerPool`
+
 Author: Ahmed Hany ElBamby
 Date: 06-02-2026
 """
 import time
-import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, Future
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from queue import Queue, Empty
 from threading import Thread, Event
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem
 
+logger = LoggingSystem.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# UploadTask — IPC data container
+# ---------------------------------------------------------------------------
 
 @dataclass
 class UploadTask:
     """Represents a batch upload task."""
+
     batch_dir: Path
     batch_id: int
     split: str = "train"
 
 
+# ---------------------------------------------------------------------------
+# AsyncWorkerPool — SRP: background queue management only
+# ---------------------------------------------------------------------------
+
+class AsyncWorkerPool:
+    """Generic background task queue backed by a ``ThreadPoolExecutor``.
+
+    Single Responsibility: manages the queue drain loop, the executor, and
+    the futures list.  It knows nothing about Roboflow or upload logic.
+
+    Usage::
+
+        pool = AsyncWorkerPool(max_workers=4, task_fn=my_callable)
+        pool.submit(some_task)
+        results = pool.wait(timeout=300)
+        pool.shutdown()
+    """
+
+    def __init__(
+        self,
+        max_workers: int,
+        task_fn: Callable[[Any], Any],
+    ) -> None:
+        """Initialise the pool.
+
+        Args:
+            max_workers: Thread-pool concurrency limit.
+            task_fn: Callable invoked for each submitted task.  Must accept a
+                single positional argument (the task object) and return any
+                value that is stored as the future result.
+        """
+        self._queue: Queue = Queue()
+        self._executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=max_workers
+        )
+        self._futures: List[Future] = []
+        self._stop_event: Event = Event()
+        self._task_fn = task_fn
+
+        self._worker_thread = Thread(target=self._drain_queue, daemon=True)
+        self._worker_thread.start()
+        logger.debug(
+            f"AsyncWorkerPool started (max_workers={max_workers})"
+        )
+
+    # ------------------------------------------------------------------
+    # Queue operations
+    # ------------------------------------------------------------------
+
+    def submit(self, task: Any) -> None:
+        """Enqueue a task for background execution.
+
+        Args:
+            task: Any picklable object passed verbatim to *task_fn*.
+        """
+        self._queue.put(task)
+
+    def _drain_queue(self) -> None:
+        """Background thread that moves queued tasks into the executor."""
+        while not self._stop_event.is_set():
+            try:
+                task = self._queue.get(timeout=1.0)
+                future = self._executor.submit(self._task_fn, task)
+                self._futures.append(future)
+            except Empty:
+                continue
+            except Exception as exc:
+                logger.error(f"AsyncWorkerPool drain error: {exc}")
+
+    # ------------------------------------------------------------------
+    # Wait / stats / shutdown
+    # ------------------------------------------------------------------
+
+    def wait(self, timeout: Optional[float] = None) -> List[Any]:
+        """Block until all queued tasks finish.
+
+        Args:
+            timeout: Maximum seconds to wait.  ``None`` = wait forever.
+
+        Returns:
+            List of results (one per submitted task, in completion order).
+            Tasks that raised an exception contribute ``None`` to the list.
+        """
+        start = time.time()
+
+        # Drain the queue first so all tasks become futures.
+        while not self._queue.empty():
+            if timeout is not None and time.time() - start >= timeout:
+                logger.warning("AsyncWorkerPool.wait: queue drain timeout")
+                break
+            time.sleep(0.1)
+
+        # Brief pause to let the worker submit any last task.
+        time.sleep(0.5)
+
+        if not self._futures:
+            return []
+
+        logger.info(
+            f"AsyncWorkerPool: waiting for {len(self._futures)} future(s)"
+        )
+        results: List[Any] = []
+        for future in self._futures:
+            remaining: Optional[float] = None
+            if timeout is not None:
+                remaining = max(0.0, timeout - (time.time() - start))
+            try:
+                results.append(future.result(timeout=remaining))
+            except Exception as exc:
+                logger.error(f"AsyncWorkerPool: task raised {exc}")
+                results.append(None)
+
+        return results
+
+    def get_stats(self) -> Dict[str, int]:
+        """Return counts of completed, failed, pending and in-progress tasks.
+
+        Returns:
+            Dict with keys ``completed``, ``failed``, ``pending``,
+            ``in_progress``, ``total``.
+        """
+        completed = sum(
+            1 for f in self._futures if f.done() and f.exception() is None
+        )
+        failed = sum(
+            1 for f in self._futures if f.done() and f.exception() is not None
+        )
+        in_progress = sum(1 for f in self._futures if not f.done())
+        return {
+            "completed": completed,
+            "failed": failed,
+            "pending": self._queue.qsize(),
+            "in_progress": in_progress,
+            "total": len(self._futures),
+        }
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Stop the drain thread and shut down the executor.
+
+        Args:
+            wait: If ``True``, block until all running tasks complete.
+        """
+        self._stop_event.set()
+        self._executor.shutdown(wait=wait)
+        logger.debug("AsyncWorkerPool shut down")
+
+
 class DistributedUploader:
     """
     Async batch uploader for Roboflow with retry capability.
-    
-    Runs upload workers in background threads to avoid blocking
-    the main segmentation pipeline.
+
+    Delegates all queue and thread management to ``AsyncWorkerPool``
+    (SRP — this class owns only Roboflow-specific upload logic).
     """
-    
+
     def __init__(self, config, progress_tracker):
         """
         Initialize uploader.
-        
+
         Args:
             config: Configuration object with roboflow settings
             progress_tracker: ProgressTracker instance for status updates
@@ -43,49 +201,99 @@ class DistributedUploader:
         self.config = config.roboflow
         self.tracker = progress_tracker
         self.enabled = self.config.enabled
-        
-        self.rf = None
-        self.project = None
-        
+
+        self._roboflow_cls = None
+        self.upload_targets: List[Any] = []
+
         if self.enabled:
             self._init_roboflow()
-        
+
         self.batch_size = self.config.batch_upload_size
-        self.upload_queue: Queue = Queue()
-        self.executor = ThreadPoolExecutor(max_workers=self.config.upload_workers)
-        self.futures: List[Future] = []
-        self._stop_event = Event()
-        
-        # Statistics
-        self._completed = 0
-        self._failed = 0
-        
-        # Start background worker
+
+        # Delegate queue/thread/executor management to AsyncWorkerPool (SRP)
+        self._pool = AsyncWorkerPool(
+            max_workers=self.config.upload_workers,
+            task_fn=self._execute_task,
+        )
+
         if self.enabled:
-            self._worker_thread = Thread(target=self._upload_worker, daemon=True)
-            self._worker_thread.start()
             logger.info(f"Roboflow uploader started with {self.config.upload_workers} workers")
-    
-    def _init_roboflow(self):
+
+    # ------------------------------------------------------------------
+    # AsyncWorkerPool adapter
+    # ------------------------------------------------------------------
+
+    def _execute_task(self, task: UploadTask) -> bool:
+        """Adapter: run one upload task inside the worker pool."""
+        return self._upload_with_retry(task.batch_dir, task.batch_id, task.split)
+
+    def queue_batch(self, batch_dir: Path, batch_id: int, split: str = "train") -> None:
+        """
+        Queue a batch directory for upload.
+
+        Args:
+            batch_dir: Directory containing the batch data
+            batch_id: Batch ID for tracking
+            split: Dataset split (train/valid/test)
+        """
+        if not self.enabled:
+            logger.debug("Roboflow disabled, skipping upload")
+            return
+
+        task = UploadTask(batch_dir=Path(batch_dir), batch_id=batch_id, split=split)
+        self._pool.submit(task)
+        logger.info(f"Queued batch {batch_id} for upload")
+
+    def wait_for_uploads(self, timeout: Optional[float] = None) -> bool:
+        """
+        Wait for all queued uploads to complete.
+
+        Args:
+            timeout: Maximum time to wait in seconds (``None`` = wait forever)
+
+        Returns:
+            True if all uploads succeeded, False if any failed
+        """
+        results = self._pool.wait(timeout=timeout)
+        return all(r for r in results if r is not None)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return upload statistics delegated from AsyncWorkerPool."""
+        return self._pool.get_stats()
+
+    def shutdown(self, wait: bool = True) -> None:
+        """
+        Gracefully shut down the uploader.
+
+        Args:
+            wait: Whether to wait for pending uploads to finish
+        """
+        logger.info("Shutting down Roboflow uploader...")
+        self._pool.shutdown(wait=wait)
+        logger.info(f"Uploader shutdown. Stats: {self.get_stats()}")
+
+    # ------------------------------------------------------------------
+    # Roboflow-specific logic
+    # ------------------------------------------------------------------
+
+    def _init_roboflow(self) -> None:
         """Initialize Roboflow connections for all configured workspaces."""
         try:
             from roboflow import Roboflow
             self._roboflow_cls = Roboflow
-            
-            # Get all upload targets from config
+
             self.upload_targets = self.config.get_all_targets()
-            
+
             if not self.upload_targets:
                 logger.warning("No Roboflow workspaces configured, uploads disabled")
                 self.enabled = False
                 return
-            
-            # Log configured targets
+
             logger.info(f"Configured {len(self.upload_targets)} upload target(s):")
             for api_key, workspace, project, is_pred in self.upload_targets:
                 pred_str = "prediction" if is_pred else "ground truth"
                 logger.info(f"  → {workspace}/{project} ({pred_str})")
-            
+
         except ImportError:
             logger.error("Roboflow package not installed. Run: pip install roboflow")
             self.enabled = False
@@ -93,42 +301,6 @@ class DistributedUploader:
             logger.error(f"Failed to initialize Roboflow: {e}")
             self.enabled = False
 
-
-    
-    def queue_batch(self, batch_dir: Path, batch_id: int, split: str = "train"):
-        """
-        Queue a batch directory for upload.
-        
-        Args:
-            batch_dir: Directory containing the batch data
-            batch_id: Batch ID for tracking
-            split: Dataset split (train/val/test)
-        """
-        if not self.enabled:
-            logger.debug("Roboflow disabled, skipping upload")
-            return
-        
-        task = UploadTask(batch_dir=Path(batch_dir), batch_id=batch_id, split=split)
-        self.upload_queue.put(task)
-        logger.info(f"Queued batch {batch_id} for upload")
-    
-    def _upload_worker(self):
-        """Background worker that processes upload queue."""
-        while not self._stop_event.is_set():
-            try:
-                task = self.upload_queue.get(timeout=1.0)
-                future = self.executor.submit(
-                    self._upload_with_retry, 
-                    task.batch_dir, 
-                    task.batch_id, 
-                    task.split
-                )
-                self.futures.append(future)
-            except Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Upload worker error: {e}")
-    
     def _upload_with_retry(self, batch_dir: Path, batch_id: int, split: str) -> bool:
         """
         Upload batch with retry logic to ALL configured workspaces/projects.
@@ -153,10 +325,8 @@ class DistributedUploader:
         
         if all_success:
             self.tracker.mark_batch_uploaded(batch_id)
-            self._completed += 1
             logger.info(f"Batch {batch_id} uploaded to all {len(self.upload_targets)} target(s)")
         else:
-            self._failed += 1
             self.tracker.mark_batch_error(batch_id, "Failed to upload to one or more targets")
         
         return all_success
@@ -199,94 +369,6 @@ class DistributedUploader:
         logger.error(f"✗ Batch {batch_id} failed to upload to {workspace_name}/{project_name}")
         return False
 
-    
-    def wait_for_uploads(self, timeout: Optional[float] = None) -> bool:
-        """
-        Wait for all queued uploads to complete.
-        
-        Args:
-            timeout: Maximum time to wait (None = wait forever)
-            
-        Returns:
-            True if all uploads succeeded, False if any failed
-        """
-        import time as _time
-        start_time = _time.time()
-        
-        # Wait for queue to drain and futures to be created
-        # This fixes a race condition where queue_batch() is called but
-        # the background worker hasn't yet moved the task into a future
-        while not self.upload_queue.empty():
-            if timeout is not None:
-                elapsed = _time.time() - start_time
-                if elapsed >= timeout:
-                    logger.warning("Timeout waiting for upload queue to drain")
-                    break
-            _time.sleep(0.1)  # Small sleep to avoid busy-waiting
-        
-        # Give the worker a moment to submit any final tasks
-        _time.sleep(0.5)
-        
-        if not self.futures:
-            return True
-        
-        logger.info(f"Waiting for {len(self.futures)} uploads to complete...")
-        
-        all_success = True
-        for future in self.futures:
-            try:
-                remaining_timeout = None
-                if timeout is not None:
-                    elapsed = _time.time() - start_time
-                    remaining_timeout = max(0, timeout - elapsed)
-                result = future.result(timeout=remaining_timeout)
-                if not result:
-                    all_success = False
-            except Exception as e:
-                logger.error(f"Upload task failed: {e}")
-                all_success = False
-        
-        return all_success
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """
-        Get upload statistics.
-        
-        Returns:
-            Dictionary with completed, failed, pending counts
-        """
-        completed = sum(1 for f in self.futures if f.done() and not f.exception())
-        failed = sum(1 for f in self.futures if f.done() and f.exception())
-        pending = self.upload_queue.qsize()
-        in_progress = len([f for f in self.futures if not f.done()])
-        
-        return {
-            'completed': completed,
-            'failed': failed,
-            'pending': pending,
-            'in_progress': in_progress,
-            'total': len(self.futures)
-        }
-    
-    def shutdown(self, wait: bool = True):
-        """
-        Gracefully shutdown uploader.
-        
-        Args:
-            wait: Whether to wait for pending uploads
-        """
-        logger.info("Shutting down Roboflow uploader...")
-        
-        self._stop_event.set()
-        
-        if wait:
-            self.wait_for_uploads(timeout=300)  # 5 minute timeout
-        
-        self.executor.shutdown(wait=wait)
-        
-        stats = self.get_stats()
-        logger.info(f"Uploader shutdown. Stats: {stats}")
-    
     def retry_failed_batches(self, job_id: int):
         """
         Retry uploading failed batches for a job.

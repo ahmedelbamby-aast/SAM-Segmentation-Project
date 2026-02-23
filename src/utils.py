@@ -1,60 +1,20 @@
 """
-Utility functions for logging, helpers, and common operations.
+Utility functions: duration formatting, size formatting, ETA estimation,
+timestamps, and directory helpers.
+
+Note: Logging is handled globally by :class:`~src.logging_system.LoggingSystem`.
+This module no longer provides a ``setup_logging`` shim — callers should use
+``LoggingSystem.get_logger(__name__)`` directly.
 
 Author: Ahmed Hany ElBamby
 Date: 06-02-2026
 """
-import logging
-import sys
 from pathlib import Path
-from typing import Optional
 from datetime import datetime
 
+from .logging_system import LoggingSystem
 
-def setup_logging(
-    log_file: Optional[Path] = None,
-    level: str = "INFO",
-    name: Optional[str] = None
-) -> logging.Logger:
-    """
-    Configure logging with file and console handlers.
-    
-    Args:
-        log_file: Path to log file (optional)
-        level: Log level (DEBUG, INFO, WARNING, ERROR)
-        name: Logger name (uses root logger if None)
-        
-    Returns:
-        Configured logger instance
-    """
-    logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, level.upper()))
-    
-    # Clear existing handlers
-    logger.handlers.clear()
-    
-    # Formatter
-    formatter = logging.Formatter(
-        '%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    
-    # File handler
-    if log_file:
-        log_file = Path(log_file)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    
-    return logger
-
-
+logger = LoggingSystem.get_logger(__name__)
 def format_duration(seconds: float) -> str:
     """
     Format duration in seconds to human-readable string.

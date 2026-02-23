@@ -232,7 +232,7 @@ class SegmentationPipeline:
 
         # ── validator cache ────────────────────────────────────────────────
         from .validator import Validator
-        validator = Validator(self.config)
+        validator = Validator(self.config.pipeline, db_path=Path(self.config.progress.db_path))
         cached = validator.get_cached_missing_images(job_name, unprocessed_only=True)
         validator.close()
         if cached:
