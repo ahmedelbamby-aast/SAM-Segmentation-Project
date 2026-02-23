@@ -289,6 +289,7 @@ class HFModelDownloader:
         """No-op — :class:`HFModelDownloader` has no mutable counters."""
 
 
+@trace
 def download_sam3_model(
     output_dir: str = "./models",
     token: Optional[str] = None,

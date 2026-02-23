@@ -145,6 +145,7 @@ class RoboflowConfig:
                 )
             ]
     
+    @trace
     def get_all_targets(self) -> List[tuple]:
         """Get all (api_key, workspace, project, is_prediction) tuples for uploads."""
         targets = []

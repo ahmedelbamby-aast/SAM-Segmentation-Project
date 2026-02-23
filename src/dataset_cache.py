@@ -26,10 +26,12 @@ class DatasetFingerprint:
     splits: Dict[str, int]  # Count per split
     created_at: str
     
+    @trace
     def to_dict(self) -> Dict:
         return asdict(self)
     
     @classmethod
+    @trace
     def from_dict(cls, data: Dict) -> 'DatasetFingerprint':
         return cls(**data)
 

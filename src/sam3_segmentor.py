@@ -295,6 +295,7 @@ class SAM3Segmentor:
         self._process_count = 0
 
 
+@trace
 def create_segmentor(model_config: Any, pipeline_config: Any) -> SAM3Segmentor:
     """Factory: build :class:`SAM3Segmentor` from config slices (ISP).
 

@@ -42,6 +42,7 @@ class DeviceManager:
     """
 
     @staticmethod
+    @trace
     def get_available_devices() -> Dict[str, Any]:
         """Detect available compute devices.
 
@@ -81,6 +82,7 @@ class DeviceManager:
         return info
 
     @staticmethod
+    @trace
     def resolve_device(device_config: str) -> str:
         """Resolve device string from config (handles ``"auto"``).
 
@@ -108,6 +110,7 @@ class DeviceManager:
         return device_config
 
     @staticmethod
+    @trace
     def get_memory_info() -> Dict[str, float]:
         """Return current CPU RAM and per-GPU memory stats.
 
@@ -143,6 +146,7 @@ class DeviceManager:
         return info
 
     @staticmethod
+    @trace
     def maybe_gc(process_count: int, gc_interval: int, is_cpu: bool) -> None:
         """Run garbage collection periodically.
 
@@ -393,6 +397,7 @@ class MultiGPUDDP(GPUStrategy):
 # ---------------------------------------------------------------------------
 
 
+@trace
 def auto_select_strategy(config: Any) -> GPUStrategy:
     """Factory — choose the best ``GPUStrategy`` based on available hardware.
 

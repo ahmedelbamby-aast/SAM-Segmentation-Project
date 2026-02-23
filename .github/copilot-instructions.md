@@ -76,6 +76,14 @@ Every agent working on this project MUST read, understand, and obey ALL instruct
 - **Stats:** `get_stats()` / `reset_stats()` pattern on every module.
 - **No dead code:** Never commit unused functions, classes, or imports.
 
+### Documented `@trace` Exceptions
+
+The following are **deliberate exclusions** from the `@trace` requirement:
+
+1. **`LoggingSystem` class methods** (`logging_system.py`): The `trace` function is defined *below* the `LoggingSystem` class in the same module. Python cannot reference `trace` inside the class body before it exists. These 6 class methods (`initialize`, `get_logger`, `set_log_level`, `get_log_directory`, `add_handler`, `shutdown`) are structurally exempt.
+
+2. **NMS strategy hot-path methods** (`post_processor.py`): The 10 concrete `NMSStrategy` subclasses each have 2 tiny methods (`compute_suppression_score`, `should_suppress`) — 1–3 lines each, called hundreds of times per image inside inner loops. Adding `@trace` would cause severe performance degradation. These 20 methods are exempt.
+
 ---
 
 ## Testing & Delivery Gates

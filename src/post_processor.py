@@ -67,6 +67,7 @@ class NMSStrategyFactory:
     _registry: Dict[str, Type[NMSStrategy]] = {}
 
     @classmethod
+    @trace
     def register(cls, name: str) -> Callable[[Type[NMSStrategy]], Type[NMSStrategy]]:
         def decorator(strategy_cls):
             cls._registry[name] = strategy_cls
@@ -74,6 +75,7 @@ class NMSStrategyFactory:
         return decorator
 
     @classmethod
+    @trace
     def create(cls, name: str) -> NMSStrategy:
         if isinstance(name, OverlapStrategy):
             name = name.value
@@ -85,6 +87,7 @@ class NMSStrategyFactory:
         return cls._registry[name]()
 
     @classmethod
+    @trace
     def available(cls) -> List[str]:
         return list(cls._registry.keys())
 
@@ -350,6 +353,7 @@ class MaskPostProcessor:
         return _calculate_mask_overlap(m1, m2)
 
 
+@trace
 def create_post_processor(post_processing_config: Any, class_names: Optional[List[str]] = None) -> MaskPostProcessor:
     """Factory: build MaskPostProcessor from a PostProcessingConfig slice."""
     return MaskPostProcessor(post_processing_config, class_names=class_names)

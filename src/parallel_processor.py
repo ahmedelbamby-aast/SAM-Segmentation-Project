@@ -721,6 +721,7 @@ class SequentialProcessor:
 # ---------------------------------------------------------------------------
 
 
+@trace
 def create_processor(
     config: object,
     registry: object,

@@ -84,6 +84,7 @@ class AsyncWorkerPool:
     # Queue operations
     # ------------------------------------------------------------------
 
+    @trace
     def submit(self, task: Any) -> None:
         """Enqueue a task for background execution.
 
@@ -108,6 +109,7 @@ class AsyncWorkerPool:
     # Wait / stats / shutdown
     # ------------------------------------------------------------------
 
+    @trace
     def wait(self, timeout: Optional[float] = None) -> List[Any]:
         """Block until all queued tasks finish.
 
@@ -149,6 +151,7 @@ class AsyncWorkerPool:
 
         return results
 
+    @trace
     def get_stats(self) -> Dict[str, int]:
         """Return counts of completed, failed, pending and in-progress tasks.
 
@@ -171,6 +174,7 @@ class AsyncWorkerPool:
             "total": len(self._futures),
         }
 
+    @trace
     def shutdown(self, wait: bool = True) -> None:
         """Stop the drain thread and shut down the executor.
 

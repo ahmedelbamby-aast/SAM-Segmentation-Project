@@ -47,6 +47,7 @@ class ValidationResult:
         """True if no missing images found."""
         return self.missing_count == 0
 
+    @trace
     def summary(self) -> str:
         """Generate a human-readable summary string."""
         lines = [

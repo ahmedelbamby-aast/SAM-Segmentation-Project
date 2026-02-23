@@ -14,7 +14,6 @@ Date: 22-02-2026
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 from .logging_system import LoggingSystem, trace
@@ -323,6 +322,14 @@ class ClassRegistry:
             f"output_classes={self._output_names!r})"
         )
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ClassRegistry):
+            return NotImplemented
+        return (
+            self.prompts == other.prompts
+            and self.class_remapping == other.class_remapping
+        )
+
     # ------------------------------------------------------------------
     # Stats pattern
     # ------------------------------------------------------------------
@@ -337,7 +344,7 @@ class ClassRegistry:
         """
         return {
             "num_prompts": len(self.prompts),
-            "num_output_classes": self.num_output_classes,
+            "num_output_classes": self.num_classes,
             "has_remapping": bool(self.class_remapping),
             "output_class_names": list(self._output_names),
         }
@@ -345,15 +352,3 @@ class ClassRegistry:
     @trace
     def reset_stats(self) -> None:
         """No-op — :class:`ClassRegistry` has no mutable counters."""
-
-    # ------------------------------------------------------------------
-    # Dunder helpers
-    # ------------------------------------------------------------------
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ClassRegistry):
-            return NotImplemented
-        return (
-            self.prompts == other.prompts
-            and self.class_remapping == other.class_remapping
-        )
