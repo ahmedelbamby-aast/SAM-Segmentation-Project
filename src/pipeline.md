@@ -18,19 +18,19 @@ The **remap** stage (`_remap_result`) converts raw SAM3 prompt indices to output
 SegmentationPipeline(
     config: Config,
     *,
-    registry: Optional[ClassRegistry] = None,
-    preprocessor: Optional[ImagePreprocessor] = None,
-    tracker: Optional[ProgressTracker] = None,
-    uploader: Optional[DistributedUploader] = None,
-    post_processor: Optional[PostProcessor] = None,
+    registry: Optional[object] = None,
+    preprocessor: Optional[object] = None,
+    tracker: Optional[object] = None,
+    uploader: Optional[object] = None,
+    post_processor: Optional[object] = None,
 )
 ```
 
 | Method | Description |
 |---|---|
-| `run(job_name, resume=False) → Dict` | Execute (or resume) the full pipeline; return statistics |
-| `get_status(job_name) → Optional[Dict]` | Query job progress |
-| `cleanup() → None` | Release all resources |
+| `run(job_name, resume=False) → Dict` | Execute (or resume) the full pipeline; return statistics. Decorated with `@trace`. |
+| `get_status(job_name) → Optional[Dict]` | Query job progress. Decorated with `@trace`. |
+| `cleanup() → None` | Release all resources. Decorated with `@trace`. |
 | `_remap_result(result, registry) → SegmentationResult` | **Remap stage** — convert raw prompt indices → output class IDs (static) |
 | `_assign_splits(image_paths) → List[str]` | Assign train/valid/test splits |
 
@@ -40,11 +40,13 @@ SegmentationPipeline(
 
 All heavyweight objects are created inside `__init__` from `config` by default, but can be replaced with injected alternatives.  This enables unit testing of the orchestrator without touching the file system, the model, or a real DB.
 
+Constructor parameters use `Optional[object]` (not concrete types) to enforce DIP — the pipeline depends on Protocol abstractions, never on concrete classes. Concrete modules are lazy-imported inside factory branches only when no injected alternative is provided.
+
 ```python
 # Production (CLI)
 pipeline = SegmentationPipeline(config)
 
-# Test
+# Test — inject mocks without importing concrete classes
 pipeline = SegmentationPipeline(
     config,
     registry=mock_registry,
@@ -102,3 +104,16 @@ flowchart TD
 - **Created by:** `scripts/run_pipeline.py` and `src/cli/pipeline.py` entry points
 - **Config:** Full `Config` from `load_config("config/config.yaml")`
 - **Remap stage:** `_remap_result()` called in `parallel_processor.py` workers after SAM3 inference
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Removed concrete imports at module level → lazy imports inside factory branches (DIP)
+- Constructor parameters changed from concrete types to `Optional[object]` (DIP)
+- Fixed C-1: `create_processor(config, self.registry)` now passes registry
+- Added `@trace` decorator to `run()`, `get_status()`, `cleanup()`
+- Replaced all `print()` calls with `_logger.info()` (operational output convention)
+- All logging uses lazy `%s` formatting

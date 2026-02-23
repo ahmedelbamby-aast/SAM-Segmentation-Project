@@ -99,3 +99,15 @@ uploader.shutdown()
 - Created by: `src/cli/upload.py` via `DistributedUploader(config.roboflow)`
 - Pipeline stage: `[Upload]` in `src/pipeline.py`
 - Config source: `config.roboflow` (api_key, workspace, project, upload_workers)
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Added `trace` import from `src.logging_system`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to Protocol methods: `queue_batch`, `wait_for_uploads`, `get_stats`, `shutdown`
+- Added type hints `config: object, progress_tracker: object` to `__init__`
+- Converted all f-string logging to lazy `%s` formatting

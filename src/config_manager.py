@@ -12,7 +12,7 @@ from typing import List, Optional, Any, Dict
 
 from .logging_system import LoggingSystem
 
-logger = LoggingSystem.get_logger(__name__)
+_logger = LoggingSystem.get_logger(__name__)
 
 
 @dataclass
@@ -286,7 +286,7 @@ def load_config(config_path: str) -> Config:
             gpu=gpu_cfg,
         )
     except TypeError as e:
-        raise ValueError(f"Invalid configuration: {e}")
+        raise ValueError(f"Invalid configuration: {e}") from e
     
     # Validate model path exists
     if not config.model.path.exists():
@@ -360,6 +360,6 @@ def load_config_from_dict(raw: Dict[str, Any]) -> Config:
             gpu=gpu_cfg,
         )
     except TypeError as e:
-        raise ValueError(f"Invalid configuration: {e}")
+        raise ValueError(f"Invalid configuration: {e}") from e
 
     return config

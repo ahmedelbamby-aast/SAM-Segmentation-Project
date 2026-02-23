@@ -87,6 +87,17 @@ def _make_config(workers: int = 1) -> MagicMock:
     cfg.roboflow.upload_workers = 2
     cfg.roboflow.retry_attempts = 3
     cfg.roboflow.retry_delay = 1.0
+    cfg.post_processing.enabled = True
+    cfg.post_processing.iou_threshold = 0.5
+    cfg.post_processing.strategy = "confidence"
+    cfg.post_processing.class_priority = []
+    cfg.post_processing.soft_nms_sigma = 0.5
+    cfg.post_processing.min_confidence_after_decay = 0.1
+    cfg.post_processing.weighted_nms_sigma = 0.5
+    cfg.post_processing.adaptive_nms_density_factor = 0.1
+    cfg.post_processing.diou_nms_beta = 1.0
+    cfg.post_processing.mask_merge_threshold = 0.7
+    cfg.post_processing.enable_class_specific = False
     return cfg
 
 

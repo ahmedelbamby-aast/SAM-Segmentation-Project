@@ -11,9 +11,9 @@ from typing import List, Optional, Tuple, Dict, Any
 from enum import Enum
 import threading
 
-from .logging_system import LoggingSystem
+from .logging_system import LoggingSystem, trace
 
-logger = LoggingSystem.get_logger(__name__)
+_logger = LoggingSystem.get_logger(__name__)
 
 
 class Status(Enum):
@@ -91,7 +91,7 @@ class ProgressTracker:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._init_db()
-        logger.info(f"Initialized progress tracker at {self.db_path}")
+        _logger.info("Initialized progress tracker at %s", self.db_path)
     
     @property
     def conn(self) -> sqlite3.Connection:
@@ -122,7 +122,10 @@ class ProgressTracker:
             except sqlite3.OperationalError as e:
                 if "locked" in str(e).lower() and attempt < max_retries - 1:
                     wait_time = (2 ** attempt) * 0.5  # Exponential backoff: 0.5s, 1s, 2s, 4s, 8s
-                    logger.warning(f"Database locked, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    _logger.warning(
+                        "Database locked, retrying in %.1fs (attempt %d/%d)",
+                        wait_time, attempt + 1, max_retries,
+                    )
                     time.sleep(wait_time)
                     # Try to close and reopen connection
                     if hasattr(self._local, 'conn') and self._local.conn:
@@ -135,13 +138,14 @@ class ProgressTracker:
                     raise
         raise sqlite3.OperationalError("Database still locked after maximum retries")
     
-    def _init_db(self):
+    def _init_db(self) -> None:
         """Initialize database schema."""
         def _do_init():
             self.conn.executescript(self.SCHEMA)
             self.conn.commit()
         self._execute_with_retry(_do_init)
     
+    @trace
     def create_job(self, name: str, image_paths: List[Path], splits: List[str]) -> int:
         """
         Create a new processing job with all images.
@@ -182,7 +186,7 @@ class ProgressTracker:
         total_images = len(image_paths)
         batch_size = 5000  # Insert 5k at a time for better reliability
         
-        logger.info(f"Inserting {total_images} images into database...")
+        _logger.info("Inserting %d images into database...", total_images)
         
         for i in range(0, total_images, batch_size):
             end_idx = min(i + batch_size, total_images)
@@ -204,9 +208,12 @@ class ProgressTracker:
             # Log progress for large datasets
             if total_images > 50000:
                 progress = (end_idx / total_images) * 100
-                logger.info(f"Database insert progress: {end_idx}/{total_images} ({progress:.1f}%)")
+                _logger.info(
+                    "Database insert progress: %d/%d (%.1f%%)",
+                    end_idx, total_images, progress,
+                )
         
-        logger.info(f"Created job '{name}' with {total_images} images")
+        _logger.info("Created job '%s' with %d images", name, total_images)
         return job_id
     
     def get_job_id(self, name: str) -> Optional[int]:
@@ -242,7 +249,7 @@ class ProgressTracker:
         ).fetchone()
         return row['split'] if row else None
     
-    def mark_processing(self, image_ids: List[int]):
+    def mark_processing(self, image_ids: List[int]) -> None:
         """Mark images as currently being processed."""
         self.conn.executemany(
             "UPDATE images SET status = ? WHERE id = ?",
@@ -267,7 +274,7 @@ class ProgressTracker:
         count = cursor.rowcount
         self.conn.commit()
         if count > 0:
-            logger.info(f"Reset {count} stuck images to pending")
+            _logger.info("Reset %d stuck images to pending", count)
         return count
 
     def reset_error_images(self, job_id: int) -> int:
@@ -287,24 +294,27 @@ class ProgressTracker:
         count = cursor.rowcount
         self.conn.commit()
         if count > 0:
-            logger.info(f"Reset {count} error images to pending for retry")
+            _logger.info("Reset %d error images to pending for retry", count)
         return count
     
-    def mark_completed(self, image_id: int):
+    @trace
+    def mark_completed(self, image_id: int) -> None:
         """Mark image as successfully processed."""
         self.conn.execute(
             "UPDATE images SET status = ?, processed_at = ? WHERE id = ?",
             (Status.COMPLETED.value, datetime.now(), image_id)
         )
     
-    def mark_error(self, image_id: int, error_msg: str):
+    @trace
+    def mark_error(self, image_id: int, error_msg: str) -> None:
         """Mark image as failed with error message."""
         self.conn.execute(
             "UPDATE images SET status = ?, error_message = ?, processed_at = ? WHERE id = ?",
             (Status.ERROR.value, error_msg[:500], datetime.now(), image_id)  # Truncate long errors
         )
     
-    def checkpoint(self, job_id: int):
+    @trace
+    def checkpoint(self, job_id: int) -> None:
         """Commit current progress and update job stats."""
         self.conn.execute("""
             UPDATE jobs SET 
@@ -314,8 +324,9 @@ class ProgressTracker:
             WHERE id = ?
         """, (job_id, Status.COMPLETED.value, job_id, Status.ERROR.value, datetime.now(), job_id))
         self.conn.commit()
-        logger.debug(f"Checkpoint saved for job {job_id}")
+        _logger.debug("Checkpoint saved for job %d", job_id)
     
+    @trace
     def get_progress(self, job_id: int) -> Dict[str, Any]:
         """
         Get current progress statistics.
@@ -367,19 +378,19 @@ class ProgressTracker:
             (job_id, batch_num, image_count)
         )
         self.conn.commit()
-        logger.info(f"Created batch {batch_num} with {image_count} images")
+        _logger.info("Created batch %d with %d images", batch_num, image_count)
         return cursor.lastrowid
     
-    def mark_batch_uploaded(self, batch_id: int):
+    def mark_batch_uploaded(self, batch_id: int) -> None:
         """Mark batch as successfully uploaded to Roboflow."""
         self.conn.execute(
             "UPDATE batches SET status = ?, uploaded_at = ? WHERE id = ?",
             (Status.UPLOADED.value, datetime.now(), batch_id)
         )
         self.conn.commit()
-        logger.info(f"Batch {batch_id} marked as uploaded")
+        _logger.info("Batch %d marked as uploaded", batch_id)
     
-    def mark_batch_error(self, batch_id: int, error_msg: str):
+    def mark_batch_error(self, batch_id: int, error_msg: str) -> None:
         """Mark batch upload as failed."""
         self.conn.execute(
             "UPDATE batches SET status = ?, upload_error = ? WHERE id = ?",
@@ -403,7 +414,7 @@ class ProgressTracker:
         )
         return [dict(row) for row in cursor.fetchall()]
     
-    def reset_processing_images(self, job_id: int):
+    def reset_processing_images(self, job_id: int) -> None:
         """Reset images stuck in 'processing' state back to 'pending'."""
         cursor = self.conn.execute(
             "UPDATE images SET status = ? WHERE job_id = ? AND status = ?",
@@ -411,9 +422,9 @@ class ProgressTracker:
         )
         self.conn.commit()
         if cursor.rowcount > 0:
-            logger.info(f"Reset {cursor.rowcount} stuck images to pending")
+            _logger.info("Reset %d stuck images to pending", cursor.rowcount)
     
-    def close(self):
+    def close(self) -> None:
         """Close database connection."""
         if hasattr(self._local, 'conn') and self._local.conn:
             self._local.conn.close()

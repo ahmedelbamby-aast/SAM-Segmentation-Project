@@ -9,9 +9,10 @@ import numpy as np
 from pathlib import Path
 from typing import Tuple, Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
-import logging
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem, trace
+
+_logger = LoggingSystem.get_logger(__name__)
 
 
 class ImagePreprocessor:
@@ -24,17 +25,19 @@ class ImagePreprocessor:
     - Parallel directory scanning
     """
     
-    def __init__(self, config):
-        """
-        Initialize preprocessor.
-        
+    def __init__(self, config: object) -> None:
+        """Initialize preprocessor.
+
         Args:
-            config: Configuration object with pipeline settings
+            config: Full configuration object with pipeline settings.
         """
-        self.target_size = config.pipeline.resolution
-        self.supported_formats = [f.lower() for f in config.pipeline.supported_formats]
-        self.num_workers = config.pipeline.num_workers
+        self.target_size: int = config.pipeline.resolution  # type: ignore[attr-defined]
+        self.supported_formats: List[str] = [
+            f.lower() for f in config.pipeline.supported_formats  # type: ignore[attr-defined]
+        ]
+        self.num_workers: int = config.pipeline.num_workers  # type: ignore[attr-defined]
     
+    @trace
     def validate_image(self, image_path: Path) -> bool:
         """
         Check if image is valid and readable.
@@ -72,15 +75,16 @@ class ImagePreprocessor:
             return True
             
         except Exception as e:
-            logger.debug(f"Image validation failed for {image_path}: {e}")
+            _logger.debug("Image validation failed for %s: %s", image_path, e)
             return False
     
-    def set_fast_scan(self, enabled: bool = True):
+    def set_fast_scan(self, enabled: bool = True) -> None:
         """Enable/disable fast scanning (skips cv2.imread validation)."""
         self._fast_scan = enabled
         if enabled:
-            logger.info("Fast scan mode enabled (skipping image content validation)")
+            _logger.info("Fast scan mode enabled (skipping image content validation)")
     
+    @trace
     def resize_with_padding(
         self, 
         image: np.ndarray, 
@@ -129,6 +133,7 @@ class ImagePreprocessor:
         
         return padded, transform_info
     
+    @trace
     def reverse_transform_coordinates(
         self, 
         coords: np.ndarray, 
@@ -157,6 +162,7 @@ class ImagePreprocessor:
         
         return coords
     
+    @trace
     def scan_directory(self, input_dir: Path) -> List[Path]:
         """
         Scan directory for valid images using parallel validation.
@@ -180,7 +186,7 @@ class ImagePreprocessor:
         
         # Remove duplicates
         all_files = list(set(all_files))
-        logger.info(f"Found {len(all_files)} potential image files")
+        _logger.info("Found %d potential image files", len(all_files))
         
         if not all_files:
             return []
@@ -193,11 +199,12 @@ class ImagePreprocessor:
         
         invalid_count = len(all_files) - len(valid_files)
         if invalid_count > 0:
-            logger.warning(f"Skipped {invalid_count} invalid/unreadable images")
+            _logger.warning("Skipped %d invalid/unreadable images", invalid_count)
         
-        logger.info(f"Found {len(valid_files)} valid images")
+        _logger.info("Found %d valid images", len(valid_files))
         return sorted(valid_files)
     
+    @trace
     def load_image(self, image_path: Path) -> Optional[np.ndarray]:
         """
         Load image from disk.
@@ -211,12 +218,13 @@ class ImagePreprocessor:
         try:
             img = cv2.imread(str(image_path))
             if img is None:
-                logger.warning(f"Failed to load image: {image_path}")
+                _logger.warning("Failed to load image: %s", image_path)
             return img
         except Exception as e:
-            logger.error(f"Error loading image {image_path}: {e}")
+            _logger.error("Error loading image %s: %s", image_path, e)
             return None
     
+    @trace
     def get_image_info(self, image_path: Path) -> Optional[Dict[str, Any]]:
         """
         Get image metadata without loading full image.
@@ -245,6 +253,7 @@ class ImagePreprocessor:
         except Exception:
             return None
     
+    @trace
     def scan_presplit_directory(self, input_dir: Path) -> Dict[str, List[Path]]:
         """
         Scan pre-split directory with train/val/test subfolders.
@@ -268,7 +277,7 @@ class ImagePreprocessor:
             split_dir = input_dir / split
             
             if not split_dir.exists():
-                logger.warning(f"Split directory not found: {split_dir}")
+                _logger.warning("Split directory not found: %s", split_dir)
                 result[split] = []
                 continue
             
@@ -282,7 +291,7 @@ class ImagePreprocessor:
             all_files = list(set(all_files))
             
             if not all_files:
-                logger.warning(f"No images found in {split_dir}")
+                _logger.warning("No images found in %s", split_dir)
                 result[split] = []
                 continue
             
@@ -295,11 +304,12 @@ class ImagePreprocessor:
             result[split] = valid_files
             total_images += len(valid_files)
             
-            logger.info(f"Found {len(valid_files)} valid images in {split}")
+            _logger.info("Found %d valid images in %s", len(valid_files), split)
         
-        logger.info(f"Total valid images across all splits: {total_images}")
+        _logger.info("Total valid images across all splits: %d", total_images)
         return result
     
+    @trace
     def detect_input_mode(self, input_dir: Path) -> str:
         """
         Auto-detect input mode based on directory structure.
@@ -316,9 +326,9 @@ class ImagePreprocessor:
         existing_splits = sum(1 for s in splits if (input_dir / s).exists())
         
         if existing_splits >= 2:  # At least 2 of 3 splits present
-            logger.info(f"Detected pre-split structure ({existing_splits}/3 splits found)")
+            _logger.info("Detected pre-split structure (%d/3 splits found)", existing_splits)
             return "pre-split"
         else:
-            logger.info("Detected flat structure (no train/val/test subdirectories)")
+            _logger.info("Detected flat structure (no train/val/test subdirectories)")
             return "flat"
 

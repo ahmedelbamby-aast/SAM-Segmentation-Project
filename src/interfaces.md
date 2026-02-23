@@ -19,15 +19,26 @@ Single source of all Protocol (interface) definitions for the SAM 3 pipeline. Ev
 | Protocol | Implemented by | Key methods |
 |----------|---------------|-------------|
 | `ProgressCallback` | `ModuleProgressManager`, `ProgressTracker` | `on_item_start`, `on_item_complete`, `on_item_error` |
-| `Segmentor` | `SAM3Segmentor` | `process_image`, `process_batch`, `get_device_info`, `cleanup` |
-| `PostProcessor` | `MaskPostProcessor` | `apply_nms`, `get_stats`, `reset_stats` |
-| `Filter` | `ResultFilter` | `filter_result`, `get_stats`, `reset_stats` |
-| `Writer` | `AnnotationWriter` | `write_annotation`, `write_data_yaml`, `get_stats`, `reset_stats` |
-| `Tracker` | `ProgressTracker` | `create_job`, `mark_completed`, `mark_error`, `get_progress`, `checkpoint` |
-| `Uploader` | `DistributedUploader` | `queue_batch`, `wait_for_uploads`, `shutdown` |
+| `Segmentor` | `SAM3Segmentor` | `process_image → Optional[SegmentationResult]`, `process_batch → List[Optional[SegmentationResult]]`, `get_device_info`, `cleanup` |
+| `PostProcessor` | `MaskPostProcessor` | `apply_nms`, `get_stats → Dict[str, Any]`, `reset_stats` |
+| `Filter` | `ResultFilter` | `filter_result(image_path, result, copy_to_neither) → bool`, `get_stats → Dict[str, Any]`, `reset_stats` |
+| `Writer` | `AnnotationWriter` | `write_annotation(image_path, result, split, copy_image) → Optional[Path]`, `write_data_yaml`, `get_stats → Dict[str, Any]`, `reset_stats` |
+| `Tracker` | `ProgressTracker` | `create_job(name, image_paths, splits) → int`, `mark_completed(image_id)`, `mark_error(image_id, error_msg)`, `get_progress(job_id)`, `checkpoint(job_id)` |
+| `Uploader` | `DistributedUploader` | `queue_batch(batch_dir, batch_id, split)`, `wait_for_uploads(timeout) → bool`, `shutdown` |
 | `Processor` | `ParallelProcessor` | `start`, `process_batch`, `shutdown` |
 
 All Protocols carry `@runtime_checkable` — `isinstance(obj, Segmentor)` works.
+
+### Phase 7 Protocol Signature Reconciliation
+
+All Protocol signatures were reconciled to match their proven implementations:
+
+- **Segmentor**: Removed `callback` kwarg from `process_image` and `process_batch`. Return types changed to `Optional[SegmentationResult]` and `List[Optional[SegmentationResult]]` respectively.
+- **Filter**: `filter_result` now takes `(image_path: Path, result: Optional[Any], copy_to_neither: bool = True) → bool` (was `(result, *, callback) → SegmentationResult`).
+- **Writer**: `write_annotation` now takes `(image_path: Path, result: Any, split: str, copy_image: bool = True) → Optional[Path]` (was `(result, *, split, callback) → Path`). `get_stats` returns `Dict[str, Any]`.
+- **Tracker**: `create_job(name, image_paths, splits) → int` (was `(job_name, total_images) → None`). `mark_completed` / `mark_error` accept `image_id: int`.
+- **Uploader**: `queue_batch(batch_dir, batch_id, split)` signature. `wait_for_uploads(timeout) → bool` (was `() → ProcessingStats`).
+- **PostProcessor**: `get_stats` returns `Dict[str, Any]` (was `ProcessingStats`).
 
 ## Design
 
@@ -64,12 +75,12 @@ graph TD
 # Implementing a Protocol — no inheritance needed:
 from src.interfaces import Segmentor, SegmentationResult, ProgressCallback
 from pathlib import Path
-from typing import Iterator, List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any
 
 class SAM3Segmentor:
-    def process_image(self, image_path: Path, *, callback=None) -> SegmentationResult:
+    def process_image(self, image_path: Path) -> Optional[SegmentationResult]:
         ...
-    def process_batch(self, image_paths, *, callback=None) -> Iterator[SegmentationResult]:
+    def process_batch(self, image_paths: List[Path]) -> List[Optional[SegmentationResult]]:
         ...
     def get_device_info(self) -> Dict[str, Any]:
         ...
@@ -86,11 +97,13 @@ from src.interfaces import Segmentor, PostProcessor, Writer, Filter, Tracker
 class SegmentationPipeline:
     def __init__(
         self,
-        segmentor: Segmentor,
-        post_processor: PostProcessor,
-        writer: Writer,
-        filter_: Filter,
-        tracker: Tracker,
+        config,
+        *,
+        registry: Optional[object] = None,
+        preprocessor: Optional[object] = None,
+        tracker: Optional[object] = None,
+        uploader: Optional[object] = None,
+        post_processor: Optional[object] = None,
     ) -> None:
         ...
 ```
@@ -107,3 +120,19 @@ class SegmentationPipeline:
 - **Imported by**: Every module that participates in the pipeline.
 - **Config reads**: None — infrastructure only.
 - **Pipeline stage**: Not a stage — definitions used by all stages.
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+All 6 Protocol definitions reconciled to match their proven implementations (13 signature mismatches fixed):
+
+- **Segmentor**: Removed `callback` kwarg from `process_image`/`process_batch`. Return types changed to `Optional[SegmentationResult]` / `List[Optional[SegmentationResult]]`.
+- **Filter**: `filter_result` → `(image_path, result, copy_to_neither) → bool`. `get_stats` → `Dict[str, Any]`.
+- **Writer**: `write_annotation` → `(image_path, result, split, copy_image) → Optional[Path]`. `get_stats` → `Dict[str, Any]`.
+- **Tracker**: `create_job(name, image_paths, splits) → int`. `mark_completed/mark_error` accept `image_id: int`.
+- **Uploader**: `queue_batch(batch_dir, batch_id, split)`. `wait_for_uploads(timeout) → bool`.
+- **PostProcessor**: `get_stats` → `Dict[str, Any]`.
+- `ProcessingStats` retained as public data structure (used in tests).

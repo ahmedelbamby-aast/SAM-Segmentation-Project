@@ -71,3 +71,15 @@ cache.close()
 - Created by: `src/cli/segment.py` (if caching is enabled in config)
 - Config source: `config.progress.db_path`
 - Pipeline stage: optional caching layer before `[Segment]`
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Replaced `import logging` with `LoggingSystem, trace` from `src.logging_system`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to: `check_cache`, `save_cache`, `invalidate_cache`, `get_cache_info`
+- Fixed `Optional[Path] = None` type hint on `__init__`
+- Fixed `Optional[List[str]] = None` type hint on `save_cache`

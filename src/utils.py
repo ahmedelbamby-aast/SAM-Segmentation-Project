@@ -14,7 +14,9 @@ from datetime import datetime
 
 from .logging_system import LoggingSystem
 
-logger = LoggingSystem.get_logger(__name__)
+_logger = LoggingSystem.get_logger(__name__)
+
+
 def format_duration(seconds: float) -> str:
     """
     Format duration in seconds to human-readable string.

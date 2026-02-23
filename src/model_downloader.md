@@ -69,3 +69,14 @@ model_path = downloader.get_model_path()
 - Called by: `src/cli/download.py` (`sam3-download` entry point)
 - Also used by: `scripts/download_model.py` (thin wrapper)
 - Config: `--token` CLI flag or `HF_TOKEN` env var
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Replaced `import logging` with `LoggingSystem, trace` from `src.logging_system`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to: `check_auth`, `download_file`, `download_model`, `verify_model`
+- Fixed exception chaining: `except ImportError as exc: raise ImportError(...) from exc`

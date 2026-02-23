@@ -125,3 +125,12 @@ print(nms.get_stats())
 - **Created by:** `create_post_processor(config.post_processing, class_names)` in `pipeline.py.__init__`
 - **Called after:** `SegmentationPipeline._remap_result()` — receives remapped output class IDs
 - **Protocol:** Implements `PostProcessor` — verified via `isinstance(p, PostProcessor)` with `@runtime_checkable`
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Removed dead `import logging` (was already using `LoggingSystem`)
+- All other aspects already compliant: `@trace`, `_logger`, `LoggingSystem.get_logger(__name__)`

@@ -72,3 +72,15 @@ output_sets = preprocessor.scan_output_directory(Path("output"))
 - Created by: `src/cli/preprocess.py` and `src/cli/pipeline.py`
 - Config source: `config.pipeline` (resolution, supported_formats, num_workers)
 - Pipeline stage: `[Preprocess]`
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Replaced `import logging` / `logging.getLogger(__name__)` with `LoggingSystem.get_logger(__name__)` + `trace`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to all public methods: `validate_image`, `resize_with_padding`, `reverse_transform_coordinates`, `scan_directory`, `load_image`, `get_image_info`, `scan_presplit_directory`, `detect_input_mode`
+- Added `config: object` type hint and `-> None` return type to `__init__`
+- Converted all f-string logging to lazy `%s` formatting

@@ -5,12 +5,13 @@ Author: Ahmed Hany ElBamby
 Date: 06-02-2026
 """
 import os
-import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem, trace
+
+_logger = LoggingSystem.get_logger(__name__)
 
 
 @dataclass
@@ -70,12 +71,13 @@ class HFModelDownloader:
         try:
             import huggingface_hub
             self._hf_api = huggingface_hub
-        except ImportError:
+        except ImportError as exc:
             raise ImportError(
                 "huggingface_hub is required for model downloading. "
                 "Install it with: pip install huggingface_hub"
-            )
+            ) from exc
     
+    @trace
     def check_auth(self) -> bool:
         """
         Check if authentication is valid.
@@ -84,17 +86,17 @@ class HFModelDownloader:
             True if authenticated, False otherwise
         """
         if not self.token:
-            logger.warning("No Hugging Face token provided")
+            _logger.warning("No Hugging Face token provided")
             return False
         
         try:
             # Try to get user info to validate token
             api = self._hf_api.HfApi(token=self.token)
             user_info = api.whoami()
-            logger.info(f"Authenticated as: {user_info.get('name', 'Unknown')}")
+            _logger.info(f"Authenticated as: {user_info.get('name', 'Unknown')}")
             return True
         except Exception as e:
-            logger.error(f"Authentication failed: {e}")
+            _logger.error(f"Authentication failed: {e}")
             return False
     
     def get_model_info(self) -> Optional[Dict[str, Any]]:
@@ -115,7 +117,7 @@ class HFModelDownloader:
                 'last_modified': str(info.last_modified) if info.last_modified else 'Unknown'
             }
         except Exception as e:
-            logger.error(f"Failed to get model info: {e}")
+            _logger.error(f"Failed to get model info: {e}")
             return None
     
     def list_files(self) -> List[str]:
@@ -130,9 +132,10 @@ class HFModelDownloader:
             files = api.list_repo_files(repo_id=self.repo_id, repo_type="model")
             return files
         except Exception as e:
-            logger.error(f"Failed to list files: {e}")
+            _logger.error(f"Failed to list files: {e}")
             return []
     
+    @trace
     def download_file(
         self, 
         filename: str,
@@ -154,11 +157,11 @@ class HFModelDownloader:
         
         # Check if already exists
         if dest_path.exists() and not force:
-            logger.info(f"File already exists: {dest_path}")
+            _logger.info(f"File already exists: {dest_path}")
             return dest_path
         
         try:
-            logger.info(f"Downloading {filename} from {self.repo_id}...")
+            _logger.info(f"Downloading {filename} from {self.repo_id}...")
             
             # Use hf_hub_download for resumable downloads
             downloaded_path = self._hf_api.hf_hub_download(
@@ -170,13 +173,14 @@ class HFModelDownloader:
                 resume_download=True,
             )
             
-            logger.info(f"Downloaded: {downloaded_path}")
+            _logger.info(f"Downloaded: {downloaded_path}")
             return Path(downloaded_path)
             
         except Exception as e:
-            logger.error(f"Failed to download {filename}: {e}")
+            _logger.error(f"Failed to download {filename}: {e}")
             return None
     
+    @trace
     def download_model(
         self, 
         include_optional: bool = False,
@@ -196,15 +200,16 @@ class HFModelDownloader:
         
         for model_file in self.MODEL_FILES:
             if not model_file.required and not include_optional:
-                logger.debug(f"Skipping optional file: {model_file.filename}")
+                _logger.debug(f"Skipping optional file: {model_file.filename}")
                 continue
             
-            logger.info(f"Processing: {model_file.filename} - {model_file.description}")
+            _logger.info(f"Processing: {model_file.filename} - {model_file.description}")
             path = self.download_file(model_file.filename, force=force)
             results[model_file.filename] = path
         
         return results
     
+    @trace
     def verify_model(self) -> bool:
         """
         Verify that required model files exist and are valid.
@@ -218,15 +223,15 @@ class HFModelDownloader:
             path = self.output_dir / model_file.filename
             
             if not path.exists():
-                logger.error(f"Required file missing: {model_file.filename}")
+                _logger.error(f"Required file missing: {model_file.filename}")
                 return False
             
             # Check file is not empty
             if path.stat().st_size == 0:
-                logger.error(f"File is empty: {model_file.filename}")
+                _logger.error(f"File is empty: {model_file.filename}")
                 return False
             
-            logger.info(f"Verified: {model_file.filename} ({path.stat().st_size / 1e9:.2f} GB)")
+            _logger.info(f"Verified: {model_file.filename} ({path.stat().st_size / 1e9:.2f} GB)")
         
         return True
     
@@ -284,7 +289,7 @@ def download_sam3_model(
     
     # Check authentication
     if not downloader.check_auth():
-        logger.error("Authentication required. Set HF_TOKEN environment variable or pass token.")
+        _logger.error("Authentication required. Set HF_TOKEN environment variable or pass token.")
         return False
     
     # Download model
@@ -296,13 +301,13 @@ def download_sam3_model(
     # Check results
     failed = [f for f, p in results.items() if p is None]
     if failed:
-        logger.error(f"Failed to download: {failed}")
+        _logger.error(f"Failed to download: {failed}")
         return False
     
     # Verify
     if not downloader.verify_model():
-        logger.error("Model verification failed")
+        _logger.error("Model verification failed")
         return False
     
-    logger.info("Model download complete!")
+    _logger.info("Model download complete!")
     return True

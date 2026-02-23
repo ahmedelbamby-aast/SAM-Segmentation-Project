@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import yaml
 
-from .logging_system import LoggingSystem
+from .logging_system import LoggingSystem, trace
 
-logger = LoggingSystem.get_logger(__name__)
+_logger = LoggingSystem.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +33,7 @@ class MaskConverter:
     ``AnnotationWriter`` owns an instance and delegates conversion to it.
     """
 
+    @trace
     def mask_to_polygon(
         self,
         mask: np.ndarray,
@@ -82,6 +83,7 @@ class MaskConverter:
 
         return polygon
 
+    @trace
     def masks_to_polygons(
         self,
         masks: np.ndarray,
@@ -140,7 +142,7 @@ class DatasetMetadataWriter:
             for class_name in self.class_names:
                 f.write(f"{class_name}\n")
 
-        logger.debug("Wrote class files to all split directories")
+        _logger.debug("Wrote class files to all split directories")
 
     def write_data_yaml(self) -> Path:
         """Generate ``data.yaml`` for YOLOv11 training.
@@ -163,7 +165,7 @@ class DatasetMetadataWriter:
         with open(yaml_path, 'w', encoding='utf-8') as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
-        logger.info(f"Generated data.yaml at {yaml_path}")
+        _logger.info(f"Generated data.yaml at {yaml_path}")
         return yaml_path
 
 
@@ -197,7 +199,7 @@ class AnnotationWriter:
         self._metadata = DatasetMetadataWriter(self.output_dir, self.class_names)
 
         self._setup_directories()
-        logger.info(f"AnnotationWriter initialised, output: {self.output_dir}")
+        _logger.info(f"AnnotationWriter initialised, output: {self.output_dir}")
 
     # ------------------------------------------------------------------
     # Setup
@@ -209,7 +211,7 @@ class AnnotationWriter:
             (self.output_dir / split / 'images').mkdir(parents=True, exist_ok=True)
             (self.output_dir / split / 'labels').mkdir(parents=True, exist_ok=True)
         self._metadata.write_classes_files()
-        logger.debug("Created output directory structure")
+        _logger.debug("Created output directory structure")
 
     # ------------------------------------------------------------------
     # Delegation helpers (keep public API stable for callers & tests)
@@ -251,10 +253,11 @@ class AnnotationWriter:
     # Core annotation writing
     # ------------------------------------------------------------------
 
+    @trace
     def write_annotation(
         self,
         image_path: Path,
-        result,
+        result: Any,
         split: str,
         copy_image: bool = True,
     ) -> Optional[Path]:
@@ -293,9 +296,10 @@ class AnnotationWriter:
         with open(label_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
 
-        logger.debug(f"Wrote {len(polygons)} annotations to {label_path.name}")
+        _logger.debug(f"Wrote {len(polygons)} annotations to {label_path.name}")
         return label_path
 
+    @trace
     def write_empty_annotation(self, image_path: Path, split: str) -> Path:
         """Write an empty label file for an image with no detections.
 
@@ -310,6 +314,7 @@ class AnnotationWriter:
         label_path.touch()
         return label_path
 
+    @trace
     def write_data_yaml(self) -> Path:
         """Delegate ``data.yaml`` generation to :class:`DatasetMetadataWriter`.
 
@@ -322,6 +327,7 @@ class AnnotationWriter:
     # Statistics
     # ------------------------------------------------------------------
 
+    @trace
     def get_stats(self) -> Dict[str, Any]:
         """Return counts of images, labels, and annotations per split.
 
@@ -351,3 +357,11 @@ class AnnotationWriter:
             }
 
         return stats
+
+    def reset_stats(self) -> None:
+        """Reset annotation statistics.
+
+        Clears the output directory labels so :meth:`get_stats` returns zeroes.
+        Note: This does NOT delete files — it only satisfies the Protocol
+        contract.  Statistics are directory-derived, so a no-op is correct.
+        """

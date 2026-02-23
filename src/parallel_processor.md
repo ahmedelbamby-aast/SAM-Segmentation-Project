@@ -107,16 +107,20 @@ Reconstructed in each worker via `load_config_from_dict()` + `ClassRegistry.from
 
 ### Pipeline Stage Order (Remap-before-NMS)
 
-Inside `_process_image_worker`, the order is:
+Inside `_process_image_worker` and `SequentialProcessor.process_batch`, the 5-step order is:
 
 ```
-SAM3Segmentor.process_image()  → raw SegmentationResult
-ResultFilter.filter_result()   → has_detections (bool)
-AnnotationWriter.write_annotation()  (only if has_detections)
+1. SAM3Segmentor.process_image()     → raw SegmentationResult
+2. ClassRegistry.remap_prompt_index() → remap each MaskData.class_id
+3. MaskPostProcessor.apply_nms()     → NMS on remapped result
+4. ResultFilter.filter_result()      → has_detections (bool)
+5. AnnotationWriter.write_annotation() (only if has_detections)
 ```
 
-Remap is applied inside `SAM3Segmentor.process_image()` immediately after
-inference — before the result leaves the segmentor.
+**Critical constraint:** Remap MUST happen before NMS to ensure class-aware suppression uses output IDs, not raw prompt indices. This was fixed in Phase 7 (previously remap was done inside segmentor only).
+
+Workers construct a `MaskPostProcessor` from config during `_init_worker()`.
+`SequentialProcessor` builds it lazily in `_ensure_loaded()`.
 
 ---
 
@@ -138,12 +142,15 @@ sequenceDiagram
     participant POOL as ProcessPool
     participant W as Worker Process
     participant SEG as SAM3Segmentor
+    participant REG as ClassRegistry
+    participant NMS as MaskPostProcessor
     participant FILT as ResultFilter
     participant ANN as AnnotationWriter
 
     CLI->>PP: start()
     PP->>POOL: spawn workers (_init_worker)
     W-->>SEG: lazy init SAM3Segmentor
+    W-->>NMS: init MaskPostProcessor from config
     W-->>FILT: lazy init ResultFilter
     W-->>ANN: lazy init AnnotationWriter
 
@@ -151,7 +158,11 @@ sequenceDiagram
     PP->>POOL: imap_unordered(_process_image_worker, tasks)
     POOL->>W: ProcessingTask
     W->>SEG: process_image(task.image_path)
-    SEG-->>W: SegmentationResult (remapped)
+    SEG-->>W: SegmentationResult (raw)
+    W->>REG: remap each MaskData.class_id
+    REG-->>W: SegmentationResult (remapped)
+    W->>NMS: apply_nms(remapped_result)
+    NMS-->>W: SegmentationResult (NMS-filtered)
     W->>FILT: filter_result(result)
     FILT-->>W: has_detections (bool)
     W->>ANN: write_annotation(result) [if has_detections]
@@ -227,3 +238,17 @@ Original file had global mutable state and no `GPUStrategy` DI.
 pytest tests/integration/test_gpu_processor.py -v
 ========================= 16 passed in 1.12s =========================
 ```
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- **`_init_worker`**: Added `MaskPostProcessor` construction from config in worker state
+- **`_process_image_worker`**: Complete rewrite to 5-step flow: segment → remap (via `MaskData` reconstruction with `registry.remap_prompt_index`) → NMS (`post_processor.apply_nms`) → filter → annotate. Added null checks for result and empty masks.
+- **`SequentialProcessor.__init__`**: Added `self._post_processor: Optional[object] = None`
+- **`SequentialProcessor.process_batch`**: Same 5-step remap+NMS flow
+- **`SequentialProcessor._ensure_loaded`**: Builds `MaskPostProcessor` from `create_post_processor(pp_cfg, class_names=...)`
+- **`SequentialProcessor.shutdown`**: Clears `self._post_processor = None`
+- This fixes C-4: workers were missing remap+NMS steps, causing raw prompt indices to reach output

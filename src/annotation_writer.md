@@ -30,12 +30,13 @@ Implements SRP by splitting responsibilities into three classes:
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `__init__` | `(pipeline_config, class_registry)` | ISP: needs only `pipeline_config.output_dir` |
-| `write_annotation` | `(image_path, result, split, copy_image=True) → Optional[Path]` | Write label TXT for one image |
-| `write_empty_annotation` | `(image_path, split) → Path` | Write empty label (no detections) |
-| `write_data_yaml` | `() → Path` | Delegate to `DatasetMetadataWriter` |
-| `get_stats` | `() → Dict[str, Dict[str, int]]` | Per-split stats: `{split: {images, labels, annotations}}` |
-| `reset_stats` | `() → None` | Zero all stats counters |
-| `mask_to_polygon` | `(mask, simplify_epsilon=0.001) → List[float]` | Delegate to `MaskConverter` |
+| `write_annotation` | `(image_path, result, split, copy_image=True) → Optional[Path]` | Write label TXT for one image. `@trace` |
+| `write_empty_annotation` | `(image_path, split) → Path` | Write empty label (no detections). `@trace` |
+| `write_data_yaml` | `() → Path` | Delegate to `DatasetMetadataWriter`. `@trace` |
+| `get_stats` | `() → Dict[str, Dict[str, int]]` | Per-split stats: `{split: {images, labels, annotations}}`. `@trace` |
+| `reset_stats` | `() → None` | Zero all stats counters. `@trace` |
+| `mask_to_polygon` | `(mask, simplify_epsilon=0.001) → List[float]` | Delegate to `MaskConverter`. `@trace` |
+| `masks_to_polygons` | `(masks, class_ids) → List[Tuple[int, List[float]]]` | Delegate to `MaskConverter`. `@trace` |
 
 ## Design
 
@@ -94,3 +95,16 @@ stats = writer.get_stats()   # {"train": {"images": 1, "labels": 1, "annotations
 - Created by: `src/cli/annotate.py` via `AnnotationWriter(config.pipeline, registry)`
 - Pipeline stage: `[Annotate]` stage in `src/pipeline.py`
 - Config source: `pipeline.output_dir` from `config/config.yaml`
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Added `trace` import from `src.logging_system`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to all public methods: `mask_to_polygon`, `masks_to_polygons`, `write_annotation`, `write_empty_annotation`, `write_data_yaml`, `get_stats`, `reset_stats`
+- Added missing `reset_stats()` method required by `Writer` Protocol
+- Added type hint `result: Any` to `write_annotation`
+- Converted all f-string logging to lazy `%s` formatting

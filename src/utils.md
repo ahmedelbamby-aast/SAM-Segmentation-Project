@@ -51,3 +51,11 @@ out_dir = ensure_dir(Path("output/train/labels"))
 
 - Imported by: `src/pipeline.py`, `src/cli/`, `src/parallel_processor.py`
 - No config source required
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Renamed `logger` → `_logger` (dead code — never used, but consistent naming)

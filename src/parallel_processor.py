@@ -121,6 +121,13 @@ def _init_worker(
         worker_id, device, mp.current_process().name,
     )
 
+    # Build NMS post-processor in worker (if enabled)
+    post_processor = None
+    pp_cfg = getattr(config, "post_processing", None)
+    if pp_cfg is not None and getattr(pp_cfg, "enabled", False):
+        from .post_processor import create_post_processor
+        post_processor = create_post_processor(pp_cfg, class_names=registry.class_names)
+
     _worker_state = {
         "worker_id": worker_id,
         "device": device,
@@ -128,14 +135,19 @@ def _init_worker(
         "filter": ResultFilter(config.pipeline),
         "writer": AnnotationWriter(config.pipeline, registry),
         "registry": registry,
+        "post_processor": post_processor,
     }
 
 
 def _process_image_worker(task: ProcessingTask) -> ProcessingResult:
     """Worker function -- processes one image and returns a picklable result.
 
-    Remap is applied inside :class:`~src.sam3_segmentor.SAM3Segmentor`
-    immediately after inference (per the remap-before-NMS contract).
+    Execution order (per copilot-instructions.md "Remap before NMS"):
+      1. segment()  → raw prompt indices
+      2. remap()    → output class IDs via ClassRegistry
+      3. NMS()      → suppress overlapping masks (optional)
+      4. filter()   → check if image has valid detections
+      5. annotate() → write YOLO label file
 
     Args:
         task: The image task to process.
@@ -154,14 +166,56 @@ def _process_image_worker(task: ProcessingTask) -> ProcessingResult:
 
     image_path = Path(task.image_path)
     segmentor = _worker_state["segmentor"]
+    registry = _worker_state["registry"]
+    post_processor = _worker_state["post_processor"]
     result_filter = _worker_state["filter"]
     writer = _worker_state["writer"]
 
     try:
-        result: SegmentationResult = segmentor.process_image(image_path)
+        # Step 1: Segment — returns raw SAM3 prompt indices as class_id
+        result: Optional[SegmentationResult] = segmentor.process_image(image_path)
+
+        if result is None or len(result.masks) == 0:
+            # No detections — still filter (to record the None)
+            has_detections = result_filter.filter_result(image_path, result)
+            return ProcessingResult(
+                task.image_id, task.image_path, task.split,
+                success=True, has_detections=has_detections,
+            )
+
+        # Step 2: Remap — convert prompt indices → output class IDs
+        from .interfaces import MaskData as _MaskData
+        remapped_masks = [
+            _MaskData(
+                mask=md.mask,
+                confidence=md.confidence,
+                class_id=registry.remap_prompt_index(md.class_id),
+                area=md.area,
+                bbox=md.bbox,
+                polygon=md.polygon,
+            )
+            for md in result.masks
+        ]
+        result = SegmentationResult(
+            image_path=result.image_path,
+            masks=remapped_masks,
+            image_width=result.image_width,
+            image_height=result.image_height,
+            inference_time_ms=result.inference_time_ms,
+            device=result.device,
+        )
+
+        # Step 3: NMS — suppress overlapping masks (if post_processor exists)
+        if post_processor is not None:
+            result = post_processor.apply_nms(result)
+
+        # Step 4: Filter — check if image has valid detections
         has_detections = result_filter.filter_result(image_path, result)
+
+        # Step 5: Annotate — write YOLO label file
         if has_detections:
             writer.write_annotation(image_path, result, task.split)
+
         return ProcessingResult(
             task.image_id, task.image_path, task.split,
             success=True, has_detections=has_detections,
@@ -461,6 +515,7 @@ class SequentialProcessor:
         self._segmentor: Optional[object] = None
         self._filter: Optional[object] = None
         self._writer: Optional[object] = None
+        self._post_processor: Optional[object] = None
         _logger.info("SequentialProcessor created")
 
     # ------------------------------------------------------------------
@@ -494,9 +549,41 @@ class SequentialProcessor:
             if callback:
                 callback.on_item_start(item_id)
             try:
+                # Step 1: Segment — raw prompt indices
                 result = self._segmentor.process_image(img)  # type: ignore[union-attr]
+
+                if result is not None and len(result.masks) > 0:
+                    # Step 2: Remap — prompt indices → output class IDs
+                    from .interfaces import MaskData as _MaskData
+                    remapped_masks = [
+                        _MaskData(
+                            mask=md.mask,
+                            confidence=md.confidence,
+                            class_id=self._registry.remap_prompt_index(md.class_id),
+                            area=md.area,
+                            bbox=md.bbox,
+                            polygon=md.polygon,
+                        )
+                        for md in result.masks
+                    ]
+                    result = SegmentationResult(
+                        image_path=result.image_path,
+                        masks=remapped_masks,
+                        image_width=result.image_width,
+                        image_height=result.image_height,
+                        inference_time_ms=result.inference_time_ms,
+                        device=result.device,
+                    )
+
+                    # Step 3: NMS — suppress overlapping masks
+                    if self._post_processor is not None:
+                        result = self._post_processor.apply_nms(result)
+
+                # Step 4: Filter
                 has_det = self._filter.filter_result(img, result)  # type: ignore[union-attr]
                 split = ParallelProcessor._resolve_split(img)
+
+                # Step 5: Annotate
                 if has_det:
                     self._writer.write_annotation(img, result, split)  # type: ignore[union-attr]
                 if callback:
@@ -522,6 +609,7 @@ class SequentialProcessor:
         self._segmentor = None
         self._filter = None
         self._writer = None
+        self._post_processor = None
         _logger.info("SequentialProcessor shutdown complete")
 
     # ------------------------------------------------------------------
@@ -553,6 +641,13 @@ class SequentialProcessor:
         )
         self._filter = ResultFilter(cfg.pipeline)  # type: ignore[attr-defined]
         self._writer = AnnotationWriter(cfg.pipeline, self._registry)  # type: ignore[attr-defined]
+
+        # Build post-processor (NMS) if configured
+        pp_cfg = getattr(cfg, "post_processing", None)
+        if pp_cfg is not None and getattr(pp_cfg, "enabled", False):
+            from .post_processor import create_post_processor
+            class_names = getattr(self._registry, "class_names", [])
+            self._post_processor = create_post_processor(pp_cfg, class_names=class_names)
 
 
 # ---------------------------------------------------------------------------

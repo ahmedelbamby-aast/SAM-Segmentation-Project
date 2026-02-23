@@ -103,3 +103,15 @@ tracker.close()
 - Created by: `src/cli/pipeline.py`, `src/cli/progress.py`
 - Config source: `config.progress.db_path`
 - Pipeline stage: `[Segment]`, `[Annotate]`, `[Upload]` (all stages use tracking)
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Added `trace` import from `src.logging_system`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to Protocol methods: `create_job`, `mark_completed`, `mark_error`, `checkpoint`, `get_progress`
+- Added return type annotations to: `mark_completed`, `mark_error`, `checkpoint`, `mark_processing`, `mark_batch_uploaded`, `mark_batch_error`, `reset_processing_images`, `close`, `_init_db`
+- Converted all f-string logging to lazy `%s` formatting

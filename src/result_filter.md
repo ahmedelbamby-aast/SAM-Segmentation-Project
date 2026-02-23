@@ -80,3 +80,16 @@ result_filter.write_neither_manifest(Path("logs/neither_images.txt"))
 - Created by: `src/cli/filter.py` via `ResultFilter(config.pipeline)`
 - Pipeline stage: `[Filter]` in `src/pipeline.py` (runs after `[NMS]`)
 - Config source: `config.pipeline.neither_dir`
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Added `trace` import from `src.logging_system`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to: `filter_result`, `get_stats`, `write_neither_manifest`, `reset_stats`
+- Added `-> None` return type to `reset_stats`
+- Added `pipeline_config: object` type hint to `__init__`
+- Converted all f-string logging to lazy `%s` formatting

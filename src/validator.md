@@ -106,3 +106,13 @@ if not result.is_complete:
 - Created by: `src/cli/validate.py` via `Validator(config.pipeline, config.progress.db_path)`
 - Pipeline stage: `[Validate]` (optional, at end of pipeline)
 - Config source: `config.pipeline.input_dir`, `config.pipeline.output_dir`, `config.progress.db_path`
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Added `trace` import from `src.logging_system`
+- Renamed `logger` → `_logger` (private convention)
+- Added `@trace` decorator to: `store`, `retrieve`, `scan_input_directory`, `scan_output_directory`, `compare_datasets`, `run`

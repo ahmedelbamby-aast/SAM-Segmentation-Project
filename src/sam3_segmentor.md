@@ -103,3 +103,12 @@ seg.cleanup()
 - **Pipeline stage:** segment (stage 3 of 9)
 - **Next stage:** `SegmentationPipeline._remap_result()` — converts raw prompt indices to output class IDs
 - **NOTE:** `DeviceManager` will migrate to `src/gpu_strategy.py` in Phase 3
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Added `@trace` to `cleanup()` method (only missing decorator)
+- All other methods already had `@trace`, `_logger`, and `LoggingSystem`

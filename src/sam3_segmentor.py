@@ -254,6 +254,7 @@ class SAM3Segmentor:
             "memory": DeviceManager.get_memory_info(),
         }
 
+    @trace
     def cleanup(self) -> None:
         """Release model resources and clear CUDA cache."""
         if self._predictor is not None:

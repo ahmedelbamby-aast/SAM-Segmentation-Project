@@ -143,18 +143,15 @@ class Segmentor(Protocol):
     def process_image(
         self,
         image_path: Path,
-        *,
-        callback: Optional[ProgressCallback] = None,
-    ) -> SegmentationResult:
+    ) -> Optional[SegmentationResult]:
         """Run inference on a single image.
 
         Args:
             image_path: Path to the image file.
-            callback: Optional progress observer.
 
         Returns:
             :class:`SegmentationResult` with raw SAM 3 prompt indices as
-            ``mask.class_id``.
+            ``mask.class_id``, or ``None`` if the image yields no masks.
 
         Raises:
             FileNotFoundError: If *image_path* does not exist.
@@ -165,17 +162,15 @@ class Segmentor(Protocol):
     def process_batch(
         self,
         image_paths: List[Path],
-        *,
-        callback: Optional[ProgressCallback] = None,
-    ) -> Iterator[SegmentationResult]:
-        """Run inference on a list of images, yielding results one by one.
+    ) -> List[Optional[SegmentationResult]]:
+        """Run inference on a list of images.
 
         Args:
             image_paths: Ordered list of image paths.
-            callback: Optional progress observer.
 
-        Yields:
-            :class:`SegmentationResult` for each image.
+        Returns:
+            List of :class:`SegmentationResult` (or ``None``) for each image,
+            in the same order as *image_paths*.
         """
         ...
 
@@ -227,12 +222,12 @@ class PostProcessor(Protocol):
         """
         ...
 
-    def get_stats(self) -> ProcessingStats:
+    def get_stats(self) -> Dict[str, Any]:
         """Return cumulative NMS statistics.
 
         Returns:
-            :class:`ProcessingStats` with ``processed``, ``skipped``
-            (masks suppressed), ``errors``, ``total_time_ms``.
+            Dict with keys ``total_processed``, ``total_suppressed``,
+            ``total_time_ms``, etc.
         """
         ...
 
@@ -255,27 +250,32 @@ class Filter(Protocol):
 
     def filter_result(
         self,
-        result: SegmentationResult,
-        *,
-        callback: Optional[ProgressCallback] = None,
-    ) -> SegmentationResult:
-        """Filter masks in *result* according to configured thresholds.
+        image_path: Path,
+        result: Optional[Any],
+        copy_to_neither: bool = True,
+    ) -> bool:
+        """Decide whether *result* contains valid detections.
+
+        If ``copy_to_neither`` is ``True`` and there are no detections, the
+        image is copied to a ``neither/`` directory for review.
 
         Args:
-            result: Post-NMS segmentation result.
-            callback: Optional progress observer.
+            image_path: Absolute path to the source image.
+            result: Post-NMS segmentation result (may be ``None``).
+            copy_to_neither: Whether to copy undetected images.
 
         Returns:
-            New :class:`SegmentationResult` containing only masks that pass
-            all filter criteria.
+            ``True`` if the image has at least one valid detection after
+            filtering, ``False`` otherwise.
         """
         ...
 
-    def get_stats(self) -> ProcessingStats:
+    def get_stats(self) -> Dict[str, Any]:
         """Return cumulative filter statistics.
 
         Returns:
-            :class:`ProcessingStats` — ``skipped`` = masks removed.
+            Dict with keys ``total_images``, ``images_with_detections``,
+            ``images_no_detections``, etc.
         """
         ...
 
@@ -298,20 +298,21 @@ class Writer(Protocol):
 
     def write_annotation(
         self,
-        result: SegmentationResult,
-        *,
-        split: str = "train",
-        callback: Optional[ProgressCallback] = None,
-    ) -> Path:
-        """Write a ``.txt`` annotation file for the image in *result*.
+        image_path: Path,
+        result: Any,
+        split: str,
+        copy_image: bool = True,
+    ) -> Optional[Path]:
+        """Write a ``.txt`` annotation file for the image.
 
         Args:
-            result: Filtered segmentation result.
+            image_path: Absolute path to the source image.
+            result: Segmentation result (filtered, post-NMS).
             split: Dataset split (``"train"``, ``"valid"``, ``"test"``).
-            callback: Optional progress observer.
+            copy_image: Whether to copy the source image to the output dir.
 
         Returns:
-            Path to the written annotation file.
+            Path to the written annotation file, or ``None`` on skip.
 
         Raises:
             RuntimeError: If writing fails.
@@ -326,11 +327,12 @@ class Writer(Protocol):
         """
         ...
 
-    def get_stats(self) -> ProcessingStats:
+    def get_stats(self) -> Dict[str, Any]:
         """Return cumulative write statistics.
 
         Returns:
-            :class:`ProcessingStats` — ``processed`` = files written.
+            Dict with keys ``total_annotations``, ``total_images_copied``,
+            etc.
         """
         ...
 
@@ -351,54 +353,59 @@ class Tracker(Protocol):
     Implemented by :class:`~src.progress_tracker.ProgressTracker`.
     """
 
-    def create_job(self, job_name: str, total_images: int) -> None:
-        """Create or resume a job record.
+    def create_job(
+        self,
+        name: str,
+        image_paths: List[Path],
+        splits: List[str],
+    ) -> int:
+        """Create a new processing job and register all images.
 
         Args:
-            job_name: Unique identifier for the pipeline run.
-            total_images: Total number of images in the job.
+            name: Human-readable job name.
+            image_paths: Absolute paths for every image in the job.
+            splits: Parallel list of dataset split names for each image.
+
+        Returns:
+            Integer job ID for subsequent calls.
         """
         ...
 
-    def mark_completed(self, image_path: Path, stage: str) -> None:
-        """Record that *image_path* completed *stage* successfully.
+    def mark_completed(self, image_id: int) -> None:
+        """Record that *image_id* completed processing successfully.
 
         Args:
-            image_path: Absolute path to the image.
-            stage: Pipeline stage name (e.g. ``"segment"``, ``"annotate"``).
+            image_id: Row ID of the image (returned implicitly during
+                job creation).
         """
         ...
 
-    def mark_error(self, image_path: Path, stage: str, error: str) -> None:
-        """Record that *image_path* failed at *stage*.
+    def mark_error(self, image_id: int, error_msg: str) -> None:
+        """Record that *image_id* failed during processing.
 
         Args:
-            image_path: Absolute path to the image.
-            stage: Pipeline stage name.
-            error: One-line error description for the DB.
+            image_id: Row ID of the image.
+            error_msg: One-line error description for the DB.
         """
         ...
 
-    def get_progress(self, job_name: str) -> Dict[str, Any]:
-        """Return progress summary for *job_name*.
+    def get_progress(self, job_id: int) -> Dict[str, Any]:
+        """Return progress summary for *job_id*.
 
         Args:
-            job_name: Unique identifier for the pipeline run.
+            job_id: Integer job ID returned by :meth:`create_job`.
 
         Returns:
             Dict with keys ``total``, ``completed``, ``errors``,
-            ``percent_complete``, ``stage_counts``.
+            ``percent_complete``, etc.
         """
         ...
 
-    def checkpoint(self, job_name: str) -> List[Path]:
-        """Return image paths not yet completed for *job_name*.
+    def checkpoint(self, job_id: int) -> None:
+        """Persist in-memory progress to SQLite.
 
         Args:
-            job_name: Unique identifier for the pipeline run.
-
-        Returns:
-            List of :class:`~pathlib.Path` objects awaiting processing.
+            job_id: Integer job ID returned by :meth:`create_job`.
         """
         ...
 
@@ -415,21 +422,29 @@ class Uploader(Protocol):
     Implemented by :class:`~src.roboflow_uploader.DistributedUploader`.
     """
 
-    def queue_batch(self, image_paths: List[Path], annotation_paths: List[Path]) -> None:
-        """Add a batch of (image, annotation) pairs to the upload queue.
+    def queue_batch(
+        self,
+        batch_dir: Path,
+        batch_id: int,
+        split: str = "train",
+    ) -> None:
+        """Add a batch directory to the upload queue.
 
         Args:
-            image_paths: List of image file paths.
-            annotation_paths: Corresponding YOLO ``.txt`` annotation paths.
+            batch_dir: Directory containing images and annotations.
+            batch_id: Integer batch identifier for tracking.
+            split: Dataset split (``"train"``, ``"valid"``, ``"test"``).
         """
         ...
 
-    def wait_for_uploads(self) -> ProcessingStats:
-        """Block until the upload queue is empty.
+    def wait_for_uploads(self, timeout: Optional[float] = None) -> bool:
+        """Block until the upload queue is empty or *timeout* expires.
+
+        Args:
+            timeout: Maximum seconds to wait (``None`` = forever).
 
         Returns:
-            :class:`ProcessingStats` with ``processed`` = uploads succeeded,
-            ``errors`` = upload failures.
+            ``True`` if all uploads completed, ``False`` on timeout.
         """
         ...
 

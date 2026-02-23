@@ -1,4 +1,4 @@
-"""Segmentation pipeline orchestrator.
+﻿"""Segmentation pipeline orchestrator.
 
 Thin orchestrator that sequences the pipeline stages:
 
@@ -16,14 +16,13 @@ alternative implementations that satisfy the Protocols in
 ``src/interfaces.py``.
 
 Author: Ahmed Hany ElBamby
-Date: 22-02-2026
+Date: 23-02-2026
 """
 
 from __future__ import annotations
 
 import random
 import time
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -31,25 +30,15 @@ from tqdm import tqdm
 
 from .config_manager import Config, load_config
 from .interfaces import (
-    Segmentor,
     PostProcessor,
-    Writer,
-    Filter,
-    Tracker,
-    Uploader,
     SegmentationResult,
+    MaskData,
 )
 from .class_registry import ClassRegistry
-from .preprocessor import ImagePreprocessor
-from .progress_tracker import ProgressTracker
-from .roboflow_uploader import DistributedUploader
-from .dataset_cache import DatasetCache
-from .parallel_processor import create_processor
 from .utils import format_duration, estimate_eta
 from .logging_system import LoggingSystem, trace
 
 _logger = LoggingSystem.get_logger(__name__)
-logger = _logger  # backward-compat alias for legacy code in this module
 
 
 class SegmentationPipeline:
@@ -70,9 +59,9 @@ class SegmentationPipeline:
         config: Config,
         *,
         registry: Optional[ClassRegistry] = None,
-        preprocessor: Optional[ImagePreprocessor] = None,
-        tracker: Optional[ProgressTracker] = None,
-        uploader: Optional[DistributedUploader] = None,
+        preprocessor: Optional[object] = None,
+        tracker: Optional[object] = None,
+        uploader: Optional[object] = None,
         post_processor: Optional[PostProcessor] = None,
     ) -> None:
         """Initialise pipeline with configuration and optional injected deps.
@@ -80,15 +69,17 @@ class SegmentationPipeline:
         All heavy dependencies are created from *config* by default.  Pass
         explicit objects to override them (useful for testing or custom wiring).
 
+        Dependencies are accepted as ``object`` to satisfy DIP — concrete
+        classes are only imported inside the factory branches.  Callers may
+        inject any object satisfying the corresponding Protocol.
+
         Args:
             config: Full pipeline configuration.
-            registry: Optional pre-built :class:`~src.class_registry.ClassRegistry`.
-                      Created from *config* when not supplied.
-            preprocessor: Optional :class:`~src.preprocessor.ImagePreprocessor`.
-            tracker: Optional :class:`~src.progress_tracker.ProgressTracker`.
-            uploader: Optional :class:`~src.roboflow_uploader.DistributedUploader`.
-            post_processor: Optional :class:`~src.interfaces.PostProcessor`
-                            implementation used in the NMS stage.
+            registry: Optional :class:`~src.class_registry.ClassRegistry`.
+            preprocessor: Optional preprocessor (satisfies scanning API).
+            tracker: Optional progress tracker.
+            uploader: Optional uploader.
+            post_processor: Optional :class:`~src.interfaces.PostProcessor`.
         """
         self.config = config
 
@@ -98,16 +89,39 @@ class SegmentationPipeline:
 
         _logger.info("Initializing pipeline components…")
 
-        self.preprocessor = preprocessor or ImagePreprocessor(config)
-        self.preprocessor.set_fast_scan(True)
-        self.tracker = tracker or ProgressTracker(Path(config.progress.db_path))
-        self.uploader = uploader or DistributedUploader(config, self.tracker)
+        # --- Preprocessor (DIP: lazy import of concrete class) ---
+        if preprocessor is not None:
+            self.preprocessor = preprocessor
+        else:
+            from .preprocessor import ImagePreprocessor
+            self.preprocessor = ImagePreprocessor(config)
+        self.preprocessor.set_fast_scan(True)  # type: ignore[union-attr]
+
+        # --- Progress tracker (DIP: lazy import) ---
+        if tracker is not None:
+            self.tracker = tracker
+        else:
+            from .progress_tracker import ProgressTracker
+            self.tracker = ProgressTracker(Path(config.progress.db_path))
+
+        # --- Uploader (DIP: lazy import) ---
+        if uploader is not None:
+            self.uploader = uploader
+        else:
+            from .roboflow_uploader import DistributedUploader
+            self.uploader = DistributedUploader(config, self.tracker)
+
+        # --- Dataset cache ---
+        from .dataset_cache import DatasetCache
         self.cache = DatasetCache()
 
+        # --- Processor: segment + remap + filter + annotate in workers ---
+        # FIX C-1: pass registry as required 2nd argument to create_processor
+        from .parallel_processor import create_processor
         num_workers = getattr(config.model, "parallel_workers", 1)
-        self.processor = create_processor(config)
+        self.processor = create_processor(config, self.registry)
 
-        # NMS post-processor (injected or built from config)
+        # --- NMS post-processor (injected or built from config) ---
         if post_processor is not None:
             self._post_processor: Optional[PostProcessor] = post_processor
         elif config.post_processing and config.post_processing.enabled:
@@ -118,6 +132,7 @@ class SegmentationPipeline:
         else:
             self._post_processor = None
 
+        # --- Annotation writer & filter (DIP: lazy imports) ---
         from .annotation_writer import AnnotationWriter
         from .result_filter import ResultFilter
         self.writer = AnnotationWriter(config.pipeline, self.registry)
@@ -145,9 +160,6 @@ class SegmentationPipeline:
             Same :class:`~src.interfaces.SegmentationResult` with all
             ``class_id`` values replaced by remapped output class IDs.
         """
-        from dataclasses import replace as _replace
-        from .interfaces import MaskData
-
         remapped_masks = [
             MaskData(
                 mask=md.mask,
@@ -197,7 +209,7 @@ class SegmentationPipeline:
         train_count = splits.count('train')
         valid_count = splits.count('valid')
         test_count = splits.count('test')
-        logger.info(f"Split distribution - Train: {train_count}, Valid: {valid_count}, Test: {test_count}")
+        _logger.info(f"Split distribution - Train: {train_count}, Valid: {valid_count}, Test: {test_count}")
         
         return splits
     
@@ -225,7 +237,7 @@ class SegmentationPipeline:
             "valid": getattr(self.config.pipeline, "valid_percent", 100),
             "test": getattr(self.config.pipeline, "test_percent", 100),
         }
-        logger.info(
+        _logger.info(
             "Input mode: %s — sampling: train=%s%%, valid=%s%%, test=%s%%",
             input_mode, split_pct["train"], split_pct["valid"], split_pct["test"],
         )
@@ -236,24 +248,27 @@ class SegmentationPipeline:
         cached = validator.get_cached_missing_images(job_name, unprocessed_only=True)
         validator.close()
         if cached:
-            logger.info("Found %d cached missing images for job '%s'", len(cached), job_name)
-            print(f"\n📋 Using {len(cached)} cached missing images from validation")
+            _logger.info("Found %d cached missing images for job '%s'", len(cached), job_name)
+            _logger.info("Using %d cached missing images from validation", len(cached))
             image_paths = [p for p, _ in cached]
             splits = [s for _, s in cached]
             counts = Counter(splits)
-            print(f"   train: {counts.get('train',0)}, valid: {counts.get('valid',0)}, test: {counts.get('test',0)}\n")
+            _logger.info(
+                "Cached split breakdown — train: %d, valid: %d, test: %d",
+                counts.get("train", 0), counts.get("valid", 0), counts.get("test", 0),
+            )
             return image_paths, splits
 
         # ── pre-split mode ─────────────────────────────────────────────────
         if input_mode == "pre-split":
             splits_list = ["train", "valid", "test"]
             cache_valid, cached_files, cache_reason = self.cache.check_cache(input_dir, splits_list)
-            logger.info("Cache status: %s", cache_reason)
+            _logger.info("Cache status: %s", cache_reason)
             if cache_valid and cached_files:
                 split_images = {s: [Path(p) for p in cached_files.get(s, [])] for s in splits_list}
-                logger.info("Using cached scan results (no changes detected)")
+                _logger.info("Using cached scan results (no changes detected)")
             else:
-                logger.info("Scanning %s for images…", input_dir)
+                _logger.info("Scanning %s for images…", input_dir)
                 split_images = self.preprocessor.scan_presplit_directory(input_dir)
                 self.cache.save_cache(input_dir, split_images, splits_list)
 
@@ -268,7 +283,7 @@ class SegmentationPipeline:
                 else:
                     n = max(1, int(len(paths) * pct / 100))
                     sampled[sname] = _random.sample(paths, n) if len(paths) > n else paths
-                logger.info("%s: %d images (%s%%)", sname, len(sampled[sname]), pct)
+                _logger.info("%s: %d images (%s%%)", sname, len(sampled[sname]), pct)
 
             image_paths = [p for sname, paths in sampled.items() for p in paths]
             splits = [sname for sname, paths in sampled.items() for _ in paths]
@@ -277,7 +292,7 @@ class SegmentationPipeline:
             return image_paths, splits
 
         # ── flat mode ──────────────────────────────────────────────────────
-        logger.info("Scanning %s for images…", input_dir)
+        _logger.info("Scanning %s for images…", input_dir)
         image_paths = self.preprocessor.scan_directory(input_dir)
         if not image_paths:
             raise ValueError(f"No valid images found in {input_dir}")
@@ -287,9 +302,9 @@ class SegmentationPipeline:
             _random.seed(self.config.split.seed)
             n = max(1, int(len(image_paths) * avg_pct / 100))
             image_paths = _random.sample(image_paths, n)
-            logger.info("Sampled %.0f%% (avg): %d images", avg_pct, len(image_paths))
+            _logger.info("Sampled %.0f%% (avg): %d images", avg_pct, len(image_paths))
         else:
-            logger.info("Found %d valid images", len(image_paths))
+            _logger.info("Found %d valid images", len(image_paths))
 
         splits = self._assign_splits(image_paths)
         return image_paths, splits
@@ -344,7 +359,7 @@ class SegmentationPipeline:
                     else:
                         self.tracker.mark_error(image_id, error_msg or "Unknown error")
                         error_count += 1
-                        logger.error("Error processing %s: %s", Path(image_path).name, error_msg)
+                        _logger.error("Error processing %s: %s", Path(image_path).name, error_msg)
                     pbar.update(1)
 
                 pbar.set_postfix({"detections": batch_images_processed, "errors": error_count})
@@ -357,13 +372,13 @@ class SegmentationPipeline:
                     batch_id = self.tracker.create_batch(job_id, batch_num, batch_images_processed)
                     self.uploader.queue_batch(self.config.pipeline.output_dir, batch_id)
                     batch_images_processed = 0
-                    logger.info("Queued batch %d for upload", batch_num)
+                    _logger.info("Queued batch %d for upload", batch_num)
 
         if batch_images_processed > 0:
             batch_num += 1
             batch_id = self.tracker.create_batch(job_id, batch_num, batch_images_processed)
             self.uploader.queue_batch(self.config.pipeline.output_dir, batch_id)
-            logger.info("Queued final batch %d (%d images)", batch_num, batch_images_processed)
+            _logger.info("Queued final batch %d (%d images)", batch_num, batch_images_processed)
 
         return processed_count, error_count
 
@@ -390,20 +405,18 @@ class SegmentationPipeline:
         self.writer.write_data_yaml()
         self.filter.write_neither_manifest()
 
-        print("\n" + "=" * 60)
-        print("📤 UPLOAD PHASE: Uploading to Roboflow…")
-        print("=" * 60)
-        logger.info("Waiting for Roboflow uploads to complete…")
+        _logger.info("📤 UPLOAD PHASE: Uploading to Roboflow…")
+        _logger.info("Waiting for Roboflow uploads to complete…")
         self.uploader.wait_for_uploads()
 
         neither_dir = self.config.pipeline.neither_dir
         if self.uploader.should_upload_neither():
-            logger.info("Uploading neither folder (upload_neither: true)…")
+            _logger.info("Uploading neither folder (upload_neither: true)…")
             self.uploader.upload_neither_folder(neither_dir)
         else:
             neither_count = self.filter.get_neither_count()
             if neither_count > 0:
-                logger.info(
+                _logger.info(
                     "Neither folder preserved for manual review: %s (%d images)",
                     neither_dir, neither_count,
                 )
@@ -424,11 +437,11 @@ class SegmentationPipeline:
             "annotations": self.writer.get_stats(),
             "filtered": filter_stats,
         }
-        logger.info(
+        _logger.info(
             "Pipeline complete! Processed %d images in %s",
             stats["processed"], stats["duration"],
         )
-        logger.info(
+        _logger.info(
             "Filtering: %d with detections, %d moved to 'neither' (%s)",
             filter_stats["with_detections"],
             filter_stats["no_detections"],
@@ -436,6 +449,7 @@ class SegmentationPipeline:
         )
         return stats
 
+    @trace
     def run(self, job_name: str, resume: bool = False) -> Dict[str, Any]:
         """Run the segmentation pipeline (thin orchestrator).
 
@@ -454,9 +468,9 @@ class SegmentationPipeline:
         if not resume:
             image_paths, splits = self._collect_images(job_name)
             job_id = self.tracker.create_job(job_name, image_paths, splits)
-            logger.info("Starting new job '%s' with %d images", job_name, len(image_paths))
+            _logger.info("Starting new job '%s' with %d images", job_name, len(image_paths))
         else:
-            logger.info("Resuming job: %s", job_name)
+            _logger.info("Resuming job: %s", job_name)
             job_id = self.tracker.get_job_id(job_name)
             if job_id is None:
                 raise ValueError(f"Job '{job_name}' not found. Cannot resume.")
@@ -466,7 +480,7 @@ class SegmentationPipeline:
         total_images = progress.get("total_images", 0)
         already_processed = progress.get("processed_count", 0)
         if resume and already_processed > 0:
-            logger.info("Resuming from %d/%d images", already_processed, total_images)
+            _logger.info("Resuming from %d/%d images", already_processed, total_images)
 
         self.processor.start()
         processed_count, error_count = self._run_processing_loop(
@@ -474,6 +488,7 @@ class SegmentationPipeline:
         )
         return self._finalize(job_id, job_name, start_time, processed_count, error_count)
 
+    @trace
     def get_status(self, job_name: str) -> Optional[Dict[str, Any]]:
         """
         Get status of a job.
@@ -503,9 +518,10 @@ class SegmentationPipeline:
             'completed_uploads': len(uploaded_batches)
         }
     
-    def cleanup(self):
+    @trace
+    def cleanup(self) -> None:
         """Release resources."""
         self.processor.shutdown()
         self.uploader.shutdown()
         self.tracker.close()
-        logger.info("Pipeline resources released")
+        _logger.info("Pipeline resources released")

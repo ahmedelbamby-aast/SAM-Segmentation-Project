@@ -6,13 +6,14 @@ Date: 06-02-2026
 """
 import json
 import hashlib
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+from .logging_system import LoggingSystem, trace
+
+_logger = LoggingSystem.get_logger(__name__)
 
 
 @dataclass
@@ -45,7 +46,7 @@ class DatasetCache:
     
     CACHE_VERSION = 1
     
-    def __init__(self, cache_dir: Path = None):
+    def __init__(self, cache_dir: Optional[Path] = None) -> None:
         """
         Initialize dataset cache.
         
@@ -55,7 +56,7 @@ class DatasetCache:
         self.cache_dir = Path(cache_dir or "./db/cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.debug(f"DatasetCache initialized at {self.cache_dir}")
+        _logger.debug("DatasetCache initialized at %s", self.cache_dir)
     
     def _get_cache_path(self, input_dir: Path) -> Path:
         """Get cache file path for a dataset directory."""
@@ -138,7 +139,8 @@ class DatasetCache:
         
         return result
     
-    def check_cache(self, input_dir: Path, splits: List[str] = None) -> Tuple[bool, Optional[Dict], str]:
+    @trace
+    def check_cache(self, input_dir: Path, splits: Optional[List[str]] = None) -> Tuple[bool, Optional[Dict], str]:
         """
         Check if cached scan results are still valid.
         
@@ -164,7 +166,7 @@ class DatasetCache:
             with open(cache_path, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
         except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Cache file corrupted: {e}")
+            _logger.warning("Cache file corrupted: %s", e)
             return False, None, "Cache file corrupted"
         
         # Check cache version
@@ -179,7 +181,7 @@ class DatasetCache:
             return False, None, "Different dataset directory"
         
         # Quick scan current state
-        logger.info("Checking dataset for changes...")
+        _logger.info("Checking dataset for changes...")
         current_info = self._quick_scan(input_dir, splits)
         current_fp = self._compute_fingerprint(input_dir, current_info)
         
@@ -193,14 +195,15 @@ class DatasetCache:
             return False, None, "Files modified since last scan"
         
         # Cache is valid!
-        logger.info(f"Cache valid - {stored_fp.total_files} files, skipping full scan")
+        _logger.info("Cache valid - %d files, skipping full scan", stored_fp.total_files)
         return True, cache_data['files'], "Cache valid - no changes detected"
     
+    @trace
     def save_cache(
         self, 
         input_dir: Path, 
         files_by_split: Dict[str, List[Path]],
-        splits: List[str] = None
+        splits: Optional[List[str]] = None,
     ) -> Path:
         """
         Save scan results to cache.
@@ -247,9 +250,10 @@ class DatasetCache:
         with open(cache_path, 'w', encoding='utf-8') as f:
             json.dump(cache_data, f, indent=2)
         
-        logger.info(f"Saved dataset cache: {fingerprint.total_files} files")
+        _logger.info("Saved dataset cache: %d files", fingerprint.total_files)
         return cache_path
     
+    @trace
     def invalidate_cache(self, input_dir: Path) -> bool:
         """
         Invalidate cache for a dataset directory.
@@ -263,10 +267,11 @@ class DatasetCache:
         cache_path = self._get_cache_path(Path(input_dir))
         if cache_path.exists():
             cache_path.unlink()
-            logger.info(f"Cache invalidated for {input_dir}")
+            _logger.info("Cache invalidated for %s", input_dir)
             return True
         return False
     
+    @trace
     def get_cache_info(self, input_dir: Path) -> Optional[Dict[str, Any]]:
         """
         Get information about cached dataset.

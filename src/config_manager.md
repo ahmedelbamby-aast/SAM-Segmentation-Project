@@ -81,3 +81,12 @@ config = load_config_from_dict(config_dict)
 
 - Used by: all CLI entry points in `src/cli/`
 - Required for: IPC workers via `load_config_from_dict(config.pipeline.to_dict())`
+
+## Phase 7 — Audit Compliance
+
+**Date:** 25-02-2026
+
+### Changes
+
+- Renamed `logger` → `_logger` (dead code — never used, but consistent naming)
+- Fixed 2 exception chaining issues: `except TypeError as e: raise ValueError(...) from e`

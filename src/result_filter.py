@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
-from .logging_system import LoggingSystem
+from .logging_system import LoggingSystem, trace
 
-logger = LoggingSystem.get_logger(__name__)
+_logger = LoggingSystem.get_logger(__name__)
 
 
 @dataclass
@@ -36,7 +36,7 @@ class ResultFilter:
     Images with no teacher or student detections are moved to a 'Neither' folder.
     """
     
-    def __init__(self, pipeline_config):
+    def __init__(self, pipeline_config: object) -> None:
         """
         Initialize result filter.
 
@@ -52,13 +52,14 @@ class ResultFilter:
         self.stats = FilterStats()
         self._filtered_images: List[Path] = []
         
-        logger.info(f"ResultFilter initialized, neither folder: {self.neither_dir}")
+        _logger.info("ResultFilter initialized, neither folder: %s", self.neither_dir)
     
-    def _setup_directories(self):
+    def _setup_directories(self) -> None:
         """Create neither directory structure."""
         (self.neither_dir / 'images').mkdir(parents=True, exist_ok=True)
-        logger.debug("Created 'neither' directory structure")
+        _logger.debug("Created 'neither' directory structure")
     
+    @trace
     def filter_result(
         self, 
         image_path: Path, 
@@ -93,7 +94,7 @@ class ResultFilter:
             if copy_to_neither:
                 self._move_to_neither(image_path)
             
-            logger.debug(f"Filtered (no detections): {image_path.name}")
+            _logger.debug("Filtered (no detections): %s", image_path.name)
             return False
     
     def _has_valid_detections(self, result: Optional[Any]) -> bool:
@@ -123,7 +124,7 @@ class ResultFilter:
         
         return False
     
-    def _move_to_neither(self, image_path: Path):
+    def _move_to_neither(self, image_path: Path) -> None:
         """
         Copy image to neither folder.
         
@@ -133,10 +134,11 @@ class ResultFilter:
         try:
             dest_path = self.neither_dir / 'images' / image_path.name
             shutil.copy2(str(image_path), str(dest_path))
-            logger.debug(f"Copied to neither: {image_path.name}")
+            _logger.debug("Copied to neither: %s", image_path.name)
         except Exception as e:
-            logger.error(f"Failed to copy {image_path.name} to neither: {e}")
+            _logger.error("Failed to copy %s to neither: %s", image_path.name, e)
     
+    @trace
     def get_stats(self) -> Dict[str, Any]:
         """
         Get filter statistics.
@@ -163,6 +165,7 @@ class ResultFilter:
             return len(list(images_dir.glob('*')))
         return 0
     
+    @trace
     def write_neither_manifest(self) -> Path:
         """
         Write a manifest file listing all filtered images.
@@ -180,10 +183,11 @@ class ResultFilter:
             for img_path in sorted(self._filtered_images):
                 f.write(f"{img_path.name}\n")
         
-        logger.info(f"Wrote neither manifest: {manifest_path}")
+        _logger.info("Wrote neither manifest: %s", manifest_path)
         return manifest_path
     
-    def reset_stats(self):
+    @trace
+    def reset_stats(self) -> None:
         """Reset filter statistics."""
         self.stats = FilterStats()
         self._filtered_images.clear()
