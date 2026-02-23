@@ -302,3 +302,24 @@ class DatasetCache:
             }
         except (json.JSONDecodeError, IOError):
             return None
+
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return cache statistics.
+
+        Returns:
+            Dict with ``cache_dir`` and ``cached_datasets`` count.
+        """
+        cached = list(self.cache_dir.glob("*.json")) if self.cache_dir.exists() else []
+        return {
+            "cache_dir": str(self.cache_dir),
+            "cached_datasets": len(cached),
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — :class:`DatasetCache` has no mutable counters."""

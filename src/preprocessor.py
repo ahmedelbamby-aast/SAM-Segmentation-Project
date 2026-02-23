@@ -25,17 +25,18 @@ class ImagePreprocessor:
     - Parallel directory scanning
     """
     
-    def __init__(self, config: object) -> None:
+    def __init__(self, pipeline_config: object) -> None:
         """Initialize preprocessor.
 
         Args:
-            config: Full configuration object with pipeline settings.
+            pipeline_config: :class:`~src.config_manager.PipelineConfig` slice
+                (ISP — receives only the pipeline config, not the full Config).
         """
-        self.target_size: int = config.pipeline.resolution  # type: ignore[attr-defined]
+        self.target_size: int = pipeline_config.resolution  # type: ignore[attr-defined]
         self.supported_formats: List[str] = [
-            f.lower() for f in config.pipeline.supported_formats  # type: ignore[attr-defined]
+            f.lower() for f in pipeline_config.supported_formats  # type: ignore[attr-defined]
         ]
-        self.num_workers: int = config.pipeline.num_workers  # type: ignore[attr-defined]
+        self.num_workers: int = pipeline_config.num_workers  # type: ignore[attr-defined]
     
     @trace
     def validate_image(self, image_path: Path) -> bool:
@@ -332,4 +333,27 @@ class ImagePreprocessor:
         else:
             _logger.info("Detected flat structure (no train/val/test subdirectories)")
             return "flat"
+
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return preprocessor configuration statistics.
+
+        Returns:
+            Dict with ``target_size``, ``supported_formats``, and
+            ``num_workers``.
+        """
+        return {
+            "target_size": self.target_size,
+            "supported_formats": list(self.supported_formats),
+            "num_workers": self.num_workers,
+            "fast_scan": getattr(self, "_fast_scan", False),
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — :class:`ImagePreprocessor` has no mutable counters."""
 

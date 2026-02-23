@@ -88,8 +88,8 @@ def main(argv: List[str] = None) -> int:
     if args.output_dir:
         config.pipeline.output_dir = Path(args.output_dir)
 
-    # 5. Wire concrete class (ISP: preprocessor only needs pipeline config slice)
-    preprocessor = ImagePreprocessor(config)
+    # 5. Wire concrete class (ISP: preprocessor receives pipeline config slice)
+    preprocessor = ImagePreprocessor(config.pipeline)
     if args.fast:
         preprocessor.set_fast_scan(True)
 

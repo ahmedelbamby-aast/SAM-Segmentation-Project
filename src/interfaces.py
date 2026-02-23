@@ -93,8 +93,7 @@ class ProgressCallback(Protocol):
     """Observer interface for per-item progress events.
 
     Implemented by :class:`~src.progress_display.ModuleProgressManager`
-    (ephemeral Rich display) and :class:`~src.progress_tracker.ProgressTracker`
-    (durable SQLite persistence).
+    (ephemeral Rich display).
     """
 
     def on_item_start(self, item_id: str) -> None:
@@ -119,6 +118,91 @@ class ProgressCallback(Protocol):
         Args:
             item_id: Unique identifier for the item.
             error: The exception that was raised.
+        """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Preprocessor protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class Preprocessor(Protocol):
+    """Validates, scans, and loads images before segmentation.
+
+    Implemented by :class:`~src.preprocessor.ImagePreprocessor`.
+    """
+
+    def validate_image(self, image_path: Path) -> bool:
+        """Check if *image_path* is a valid, readable image.
+
+        Args:
+            image_path: Path to the image file.
+
+        Returns:
+            ``True`` if the image is valid, ``False`` otherwise.
+        """
+        ...
+
+    def set_fast_scan(self, enabled: bool = True) -> None:
+        """Toggle fast-scan mode (skips ``cv2.imread`` validation).
+
+        Args:
+            enabled: ``True`` to enable fast scanning.
+        """
+        ...
+
+    def scan_directory(self, input_dir: Path) -> List[Path]:
+        """Scan *input_dir* for valid images using parallel validation.
+
+        Args:
+            input_dir: Directory to scan.
+
+        Returns:
+            Sorted list of valid image paths.
+
+        Raises:
+            FileNotFoundError: If *input_dir* does not exist.
+        """
+        ...
+
+    def scan_presplit_directory(
+        self, input_dir: Path,
+    ) -> Dict[str, List[Path]]:
+        """Scan a pre-split directory with train/valid/test subfolders.
+
+        Args:
+            input_dir: Root directory containing split subdirectories.
+
+        Returns:
+            Mapping of split name → sorted list of valid image paths.
+
+        Raises:
+            FileNotFoundError: If *input_dir* does not exist.
+        """
+        ...
+
+    def load_image(self, image_path: Path) -> Optional[Any]:
+        """Load an image from disk.
+
+        Args:
+            image_path: Path to the image file.
+
+        Returns:
+            Image array (BGR ``np.ndarray``) or ``None`` on failure.
+        """
+        ...
+
+    def detect_input_mode(self, input_dir: Path) -> str:
+        """Auto-detect whether *input_dir* is flat or pre-split.
+
+        Args:
+            input_dir: Input directory path.
+
+        Returns:
+            ``"pre-split"`` if ≥ 2 of train/valid/test exist, else
+            ``"flat"``.
         """
         ...
 

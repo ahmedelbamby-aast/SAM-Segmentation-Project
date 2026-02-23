@@ -30,11 +30,15 @@ from tqdm import tqdm
 
 from .config_manager import Config, load_config
 from .interfaces import (
+    Filter,
     PostProcessor,
+    Preprocessor,
+    Processor,
     SegmentationResult,
     MaskData,
     Tracker,
     Uploader,
+    Writer,
 )
 from .class_registry import ClassRegistry
 from .utils import format_duration, estimate_eta
@@ -61,10 +65,13 @@ class SegmentationPipeline:
         config: Config,
         *,
         registry: Optional[ClassRegistry] = None,
-        preprocessor: Optional[object] = None,
+        preprocessor: Optional[Preprocessor] = None,
         tracker: Optional[Tracker] = None,
         uploader: Optional[Uploader] = None,
         post_processor: Optional[PostProcessor] = None,
+        processor: Optional[Processor] = None,
+        writer: Optional[Writer] = None,
+        filter_: Optional[Filter] = None,
     ) -> None:
         """Initialise pipeline with configuration and optional injected deps.
 
@@ -79,10 +86,13 @@ class SegmentationPipeline:
         Args:
             config: Full pipeline configuration.
             registry: Optional :class:`~src.class_registry.ClassRegistry`.
-            preprocessor: Optional preprocessor (satisfies scanning API).
+            preprocessor: Optional :class:`~src.interfaces.Preprocessor`.
             tracker: Optional :class:`~src.interfaces.Tracker`.
             uploader: Optional :class:`~src.interfaces.Uploader`.
             post_processor: Optional :class:`~src.interfaces.PostProcessor`.
+            processor: Optional :class:`~src.interfaces.Processor`.
+            writer: Optional :class:`~src.interfaces.Writer`.
+            filter_: Optional :class:`~src.interfaces.Filter`.
         """
         self.config = config
 
@@ -97,7 +107,7 @@ class SegmentationPipeline:
             self.preprocessor = preprocessor
         else:
             from .preprocessor import ImagePreprocessor
-            self.preprocessor = ImagePreprocessor(config)
+            self.preprocessor = ImagePreprocessor(config.pipeline)
         self.preprocessor.set_fast_scan(True)  # type: ignore[union-attr]
 
         # --- Progress tracker (DIP: lazy import) ---
@@ -112,17 +122,19 @@ class SegmentationPipeline:
             self.uploader = uploader
         else:
             from .roboflow_uploader import DistributedUploader
-            self.uploader = DistributedUploader(config, self.tracker)
+            self.uploader = DistributedUploader(config.roboflow, self.tracker)
 
         # --- Dataset cache ---
         from .dataset_cache import DatasetCache
         self.cache = DatasetCache()
 
         # --- Processor: segment + remap + filter + annotate in workers ---
-        # FIX C-1: pass registry as required 2nd argument to create_processor
-        from .parallel_processor import create_processor
+        if processor is not None:
+            self.processor = processor
+        else:
+            from .parallel_processor import create_processor
+            self.processor = create_processor(config, self.registry)
         num_workers = getattr(config.model, "parallel_workers", 1)
-        self.processor = create_processor(config, self.registry)
 
         # --- NMS post-processor (injected or built from config) ---
         if post_processor is not None:
@@ -136,10 +148,17 @@ class SegmentationPipeline:
             self._post_processor = None
 
         # --- Annotation writer & filter (DIP: lazy imports) ---
-        from .annotation_writer import AnnotationWriter
-        from .result_filter import ResultFilter
-        self.writer = AnnotationWriter(config.pipeline, self.registry)
-        self.filter = ResultFilter(config.pipeline)
+        if writer is not None:
+            self.writer = writer
+        else:
+            from .annotation_writer import AnnotationWriter
+            self.writer = AnnotationWriter(config.pipeline, self.registry)
+
+        if filter_ is not None:
+            self.filter = filter_
+        else:
+            from .result_filter import ResultFilter
+            self.filter = ResultFilter(config.pipeline)
 
         self.batch_size = config.roboflow.batch_upload_size
         self.checkpoint_interval = config.progress.checkpoint_interval
@@ -345,27 +364,64 @@ class SegmentationPipeline:
                 if not pending:
                     break
 
-                image_ids = [p[0] for p in pending]
-                self.tracker.mark_processing(image_ids)
-                tasks = [
-                    (image_id, str(image_path), split)
-                    for image_id, image_path, split in pending
-                ]
-                results = self.processor.process_batch(tasks)
+                # Build lookup: image_path → (image_id, split)
+                path_to_info: Dict[str, Tuple[int, str]] = {}
+                image_paths: List[Path] = []
+                image_ids: List[int] = []
+                for image_id, image_path, split in pending:
+                    p = Path(str(image_path))
+                    path_to_info[str(p)] = (image_id, split)
+                    image_paths.append(p)
+                    image_ids.append(image_id)
 
-                for image_id, image_path, split, success, has_detections, error_msg in results:
-                    if success:
-                        self.tracker.mark_completed(image_id)
-                        processed_count += 1
-                        if has_detections:
-                            batch_images_processed += 1
-                    else:
-                        self.tracker.mark_error(image_id, error_msg or "Unknown error")
-                        error_count += 1
-                        _logger.error("Error processing %s: %s", Path(image_path).name, error_msg)
+                self.tracker.mark_processing(image_ids)
+                completed_ids: set = set()
+
+                for result in self.processor.process_batch(image_paths):
+                    # Match result back to tracked image via image_path
+                    result_key = str(result.image_path)
+                    info = path_to_info.get(result_key)
+                    if info is None:
+                        # Fallback: stem match
+                        for p_str, p_info in path_to_info.items():
+                            if Path(p_str).stem == result.image_path.stem:
+                                info = p_info
+                                break
+                    if info is None:
+                        _logger.warning(
+                            "Result for untracked image: %s",
+                            result.image_path,
+                        )
+                        pbar.update(1)
+                        continue
+
+                    image_id, _split = info
+                    completed_ids.add(image_id)
+                    self.tracker.mark_completed(image_id)
+                    processed_count += 1
+
+                    has_detections = len(result.masks) > 0
+                    # Track stats on pipeline's own filter (processor
+                    # already handled file ops — copy_to_neither=False)
+                    self.filter.filter_result(
+                        result.image_path, result, copy_to_neither=False
+                    )
+                    if has_detections:
+                        batch_images_processed += 1
                     pbar.update(1)
 
-                pbar.set_postfix({"detections": batch_images_processed, "errors": error_count})
+                # Images not yielded by processor are errors
+                for img_id in image_ids:
+                    if img_id not in completed_ids:
+                        self.tracker.mark_error(
+                            img_id, "Processing failed"
+                        )
+                        error_count += 1
+                        pbar.update(1)
+
+                pbar.set_postfix(
+                    {"detections": batch_images_processed, "errors": error_count}
+                )
 
                 if (processed_count + error_count) % self.checkpoint_interval == 0:
                     self.tracker.checkpoint(job_id)
@@ -528,3 +584,41 @@ class SegmentationPipeline:
         self.uploader.shutdown()
         self.tracker.close()
         _logger.info("Pipeline resources released")
+
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Aggregate statistics from all pipeline sub-components.
+
+        Returns:
+            Dict keyed by component name, each value being the
+            component's own ``get_stats()`` dict.
+        """
+        stats: Dict[str, Any] = {
+            "registry": self.registry.get_stats(),
+        }
+        if hasattr(self.filter, "get_stats"):
+            stats["filter"] = self.filter.get_stats()
+        if hasattr(self.writer, "get_stats"):
+            stats["writer"] = self.writer.get_stats()
+        if self._post_processor is not None and hasattr(self._post_processor, "get_stats"):
+            stats["post_processor"] = self._post_processor.get_stats()
+        if hasattr(self.processor, "get_stats"):
+            stats["processor"] = self.processor.get_stats()
+        return stats
+
+    @trace
+    def reset_stats(self) -> None:
+        """Reset statistics on all sub-components that support it."""
+        self.registry.reset_stats()
+        if hasattr(self.filter, "reset_stats"):
+            self.filter.reset_stats()
+        if hasattr(self.writer, "reset_stats"):
+            self.writer.reset_stats()
+        if self._post_processor is not None and hasattr(self._post_processor, "reset_stats"):
+            self._post_processor.reset_stats()
+        if hasattr(self.processor, "reset_stats"):
+            self.processor.reset_stats()

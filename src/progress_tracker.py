@@ -443,3 +443,29 @@ class ProgressTracker:
         if hasattr(self._local, 'conn') and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
+
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return progress-tracking statistics derived from the database.
+
+        Returns:
+            Dict with ``total_jobs``, ``total_images``, and
+            ``total_batches``.
+        """
+        row_jobs = self.conn.execute("SELECT COUNT(*) FROM jobs").fetchone()
+        row_imgs = self.conn.execute("SELECT COUNT(*) FROM images").fetchone()
+        row_bat = self.conn.execute("SELECT COUNT(*) FROM batches").fetchone()
+        return {
+            "total_jobs": row_jobs[0] if row_jobs else 0,
+            "total_images": row_imgs[0] if row_imgs else 0,
+            "total_batches": row_bat[0] if row_bat else 0,
+            "db_path": str(self.db_path),
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — stats are derived from the SQLite database."""

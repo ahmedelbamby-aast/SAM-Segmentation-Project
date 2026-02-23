@@ -30,7 +30,7 @@ class MockConfig:
 @pytest.fixture
 def preprocessor():
     """Create preprocessor instance."""
-    return ImagePreprocessor(MockConfig())
+    return ImagePreprocessor(MockConfig().pipeline)
 
 
 @pytest.fixture

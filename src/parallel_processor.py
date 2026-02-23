@@ -21,9 +21,9 @@ from __future__ import annotations
 import multiprocessing as mp
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
-from .interfaces import ProgressCallback, SegmentationResult
+from .interfaces import MaskData, ProgressCallback, SegmentationResult
 from .logging_system import LoggingSystem, trace
 
 _logger = LoggingSystem.get_logger(__name__)
@@ -394,6 +394,27 @@ class ParallelProcessor:
         self.shutdown(wait=True)
 
     # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return parallel-processor statistics.
+
+        Returns:
+            Dict with ``num_workers``, ``started``, and ``gpu_backend``.
+        """
+        return {
+            "num_workers": self._num_workers,
+            "started": self._pool is not None,
+            "gpu_backend": self._gpu_strategy.backend,
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — :class:`ParallelProcessor` has no mutable counters."""
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -483,10 +504,27 @@ class ParallelProcessor:
 
     @staticmethod
     def _build_segmentation_result(proc: ProcessingResult) -> SegmentationResult:
-        """Build a minimal SegmentationResult from a ProcessingResult."""
+        """Build a minimal SegmentationResult from a ProcessingResult.
+
+        Actual mask data is processed entirely inside the worker.  A
+        placeholder :class:`MaskData` entry is added when the worker
+        reported detections so that ``len(result.masks) > 0`` accurately
+        conveys the detection status to the pipeline.
+        """
+        import numpy as np
+
+        masks: List[MaskData] = []
+        if proc.has_detections:
+            masks.append(MaskData(
+                mask=np.zeros((1, 1), dtype=bool),
+                confidence=1.0,
+                class_id=0,
+                area=0,
+                bbox=(0, 0, 0, 0),
+            ))
         return SegmentationResult(
             image_path=Path(proc.image_path),
-            masks=[],
+            masks=masks,
             image_width=0,
             image_height=0,
             inference_time_ms=0.0,
@@ -552,11 +590,19 @@ class SequentialProcessor:
                 # Step 1: Segment — raw prompt indices
                 result = self._segmentor.process_image(img)  # type: ignore[union-attr]
 
-                if result is not None and len(result.masks) > 0:
+                # Guarantee a valid SegmentationResult (Protocol compliance)
+                if result is None:
+                    result = SegmentationResult(
+                        image_path=img,
+                        masks=[],
+                        image_width=0,
+                        image_height=0,
+                        inference_time_ms=0.0,
+                    )
+                elif len(result.masks) > 0:
                     # Step 2: Remap — prompt indices → output class IDs
-                    from .interfaces import MaskData as _MaskData
                     remapped_masks = [
-                        _MaskData(
+                        MaskData(
                             mask=md.mask,
                             confidence=md.confidence,
                             class_id=self._registry.remap_prompt_index(md.class_id),
@@ -622,6 +668,26 @@ class SequentialProcessor:
 
     def __exit__(self, *_: object) -> None:
         self.shutdown()
+
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return sequential-processor statistics.
+
+        Returns:
+            Dict with ``loaded`` flag indicating whether sub-components
+            are initialised.
+        """
+        return {
+            "loaded": self._segmentor is not None,
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — :class:`SequentialProcessor` has no mutable counters."""
 
     # ------------------------------------------------------------------
     # Internal helpers

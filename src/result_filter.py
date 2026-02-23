@@ -100,28 +100,33 @@ class ResultFilter:
     def _has_valid_detections(self, result: Optional[Any]) -> bool:
         """
         Check if result contains valid detections.
-        
+
+        Supports both legacy duck-typed objects (with ``num_detections``
+        or ``masks`` + ``class_ids``) and :class:`~src.interfaces.SegmentationResult`
+        (which has ``masks: List[MaskData]`` but no ``class_ids``).
+
         Args:
             result: SegmentationResult object or None
-            
+
         Returns:
             True if valid detections exist
         """
         if result is None:
             return False
-        
-        # Check num_detections property
+
+        # Check num_detections property (legacy duck-typed objects)
         if hasattr(result, 'num_detections'):
             return result.num_detections > 0
-        
-        # Fallback: check masks and class_ids
-        if hasattr(result, 'masks') and hasattr(result, 'class_ids'):
+
+        # Check masks attribute (SegmentationResult or duck-typed)
+        if hasattr(result, 'masks'):
             if result.masks is None or len(result.masks) == 0:
                 return False
-            if not result.class_ids:
+            # If class_ids also present, verify it is non-empty (legacy)
+            if hasattr(result, 'class_ids') and not result.class_ids:
                 return False
             return True
-        
+
         return False
     
     def _move_to_neither(self, image_path: Path) -> None:

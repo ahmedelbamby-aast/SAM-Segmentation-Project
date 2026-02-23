@@ -270,6 +270,30 @@ class SAM3Segmentor:
             gc.collect()
             _logger.info("SAM3 model resources released")
 
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return segmentor statistics.
+
+        Returns:
+            Dict with ``images_processed``, ``model_loaded``, and
+            device info.
+        """
+        stats: Dict[str, Any] = {
+            "images_processed": self._process_count,
+            "model_loaded": self._model_loaded,
+        }
+        stats.update(self.get_device_info())
+        return stats
+
+    @trace
+    def reset_stats(self) -> None:
+        """Reset the process counter."""
+        self._process_count = 0
+
 
 def create_segmentor(model_config: Any, pipeline_config: Any) -> SAM3Segmentor:
     """Factory: build :class:`SAM3Segmentor` from config slices (ISP).

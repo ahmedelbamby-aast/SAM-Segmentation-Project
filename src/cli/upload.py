@@ -111,7 +111,7 @@ def main(argv: List[str] = None) -> int:
         return 0
 
     # 7. Wire uploader (ISP: roboflow config slice + tracker)
-    uploader = DistributedUploader(config, tracker)
+    uploader = DistributedUploader(config.roboflow, tracker)
 
     job_id = tracker.get_job_id(args.job_name)
     if job_id is None:

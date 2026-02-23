@@ -190,15 +190,16 @@ class DistributedUploader:
     (SRP — this class owns only Roboflow-specific upload logic).
     """
 
-    def __init__(self, config: object, progress_tracker: object) -> None:
+    def __init__(self, roboflow_config: object, progress_tracker: object) -> None:
         """
         Initialize uploader.
 
         Args:
-            config: Configuration object with roboflow settings
+            roboflow_config: :class:`~src.config_manager.RoboflowConfig` slice
+                (ISP — receives only the roboflow config, not the full Config).
             progress_tracker: ProgressTracker instance for status updates
         """
-        self.config = config.roboflow
+        self.config = roboflow_config
         self.tracker = progress_tracker
         self.enabled = self.config.enabled
 

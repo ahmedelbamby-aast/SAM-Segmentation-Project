@@ -24,7 +24,7 @@ import contextlib
 import time
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from .interfaces import ProgressCallback  # protocol import
 from .logging_system import LoggingSystem, trace
@@ -363,6 +363,7 @@ class ModuleProgressManager:
     # Stats / reporting
     # ------------------------------------------------------------------
 
+    @trace
     def get_stage_stats(self, stage_name: str) -> Optional[Dict[str, object]]:
         """Return a snapshot of stats for *stage_name*.
 
@@ -386,6 +387,7 @@ class ModuleProgressManager:
             "eta": sp.eta_str,
         }
 
+    @trace
     def get_all_stats(self) -> Dict[str, Dict[str, object]]:
         """Return stats snapshots for all registered stages.
 
@@ -398,6 +400,19 @@ class ModuleProgressManager:
             for name in self._stages
         }
 
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return stats for all stages (alias for :meth:`get_all_stats`).
+
+        Satisfies the ``get_stats()`` / ``reset_stats()`` convention
+        required by the project instructions.
+
+        Returns:
+            Dict mapping stage name → stats dict.
+        """
+        return self.get_all_stats()  # type: ignore[return-value]
+
+    @trace
     def reset_stats(self) -> None:
         """Reset all stage statistics (does not stop the display)."""
         with self._lock:

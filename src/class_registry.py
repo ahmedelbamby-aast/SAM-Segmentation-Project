@@ -323,6 +323,33 @@ class ClassRegistry:
             f"output_classes={self._output_names!r})"
         )
 
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return structural statistics for this registry.
+
+        Returns:
+            Dict with ``num_prompts``, ``num_output_classes``,
+            ``has_remapping``, and ``output_class_names``.
+        """
+        return {
+            "num_prompts": len(self.prompts),
+            "num_output_classes": self.num_output_classes,
+            "has_remapping": bool(self.class_remapping),
+            "output_class_names": list(self._output_names),
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — :class:`ClassRegistry` has no mutable counters."""
+
+    # ------------------------------------------------------------------
+    # Dunder helpers
+    # ------------------------------------------------------------------
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ClassRegistry):
             return NotImplemented

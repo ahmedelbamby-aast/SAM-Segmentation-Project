@@ -266,6 +266,28 @@ class HFModelDownloader:
         
         return status
 
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return download-related statistics.
+
+        Returns:
+            Dict with ``output_dir``, ``model_verified``, and
+            ``download_status`` per file.
+        """
+        return {
+            "output_dir": str(self.output_dir),
+            "model_verified": self.verify_model(),
+            "download_status": self.get_download_status(),
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — :class:`HFModelDownloader` has no mutable counters."""
+
 
 def download_sam3_model(
     output_dir: str = "./models",

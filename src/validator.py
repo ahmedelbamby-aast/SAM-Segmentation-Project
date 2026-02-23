@@ -553,3 +553,26 @@ class Validator:
     def close(self) -> None:
         """Close the underlying :class:`ValidationCache` connection."""
         self.cache.close()
+
+    # ------------------------------------------------------------------
+    # Stats pattern
+    # ------------------------------------------------------------------
+
+    @trace
+    def get_stats(self) -> Dict[str, Any]:
+        """Return validator configuration statistics.
+
+        Returns:
+            Dict with ``input_dir``, ``output_dir``, ``input_mode``,
+            and ``supported_formats``.
+        """
+        return {
+            "input_dir": str(self.input_dir),
+            "output_dir": str(self.output_dir),
+            "input_mode": self.input_mode,
+            "supported_formats": self.supported_formats,
+        }
+
+    @trace
+    def reset_stats(self) -> None:
+        """No-op — :class:`Validator` has no mutable counters."""

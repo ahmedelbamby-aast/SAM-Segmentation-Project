@@ -150,10 +150,10 @@ def main(argv: List[str] = None) -> int:
     # 9. Build DistributedUploader if Roboflow is enabled
     uploader: DistributedUploader = None
     if config.roboflow.enabled:
-        uploader = DistributedUploader(config, tracker)
+        uploader = DistributedUploader(config.roboflow, tracker)
 
     # 10. Build ImagePreprocessor (ISP: only pipeline config slice)
-    preprocessor = ImagePreprocessor(config)
+    preprocessor = ImagePreprocessor(config.pipeline)
 
     # 11. Wire SegmentationPipeline with all injected dependencies
     pipeline = SegmentationPipeline(
