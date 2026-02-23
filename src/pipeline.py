@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Any, Tuple
 
 from tqdm import tqdm
 
-from .config_manager import Config, load_config
+from .config_manager import Config
 from .interfaces import (
     Filter,
     PostProcessor,
@@ -41,7 +41,7 @@ from .interfaces import (
     Writer,
 )
 from .class_registry import ClassRegistry
-from .utils import format_duration, estimate_eta
+from .utils import format_duration
 from .logging_system import LoggingSystem, trace
 
 _logger = LoggingSystem.get_logger(__name__)
